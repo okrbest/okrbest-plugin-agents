@@ -102,16 +102,16 @@ export default function RHS() {
             <RhsContainer>
                 <RHSPaddingContainer>
                     <RHSImage/>
-                    <RHSTitle><FormattedMessage defaultMessage='Agents is not yet configured for this workspace'/></RHSTitle>
-                    <RHSText><FormattedMessage defaultMessage='A system admin needs to complete the configuration before it can be used.'/></RHSText>
+                    <RHSTitle><FormattedMessage id='i04PqEZU' defaultMessage='Agents is not yet configured for this workspace'/></RHSTitle>
+                    <RHSText><FormattedMessage id='E/T8p1Gl' defaultMessage='A system admin needs to complete the configuration before it can be used.'/></RHSText>
                     <RHSDivider/>
-                    <RHSSubtitle><FormattedMessage defaultMessage='What is Agents?'/></RHSSubtitle>
-                    <RHSText><FormattedMessage defaultMessage='Agents is a plugin that enables you to leverage the power of AI to:'/></RHSText>
+                    <RHSSubtitle><FormattedMessage id='pvmoJR47' defaultMessage='What is Agents?'/></RHSSubtitle>
+                    <RHSText><FormattedMessage id='l4dlHzot' defaultMessage='Agents is a plugin that enables you to leverage the power of AI to:'/></RHSText>
                     <RHSText>
                         <ul>
-                            <RHSBullet><FormattedMessage defaultMessage='Get caught up quickly with instant summarization for channels and threads.'/></RHSBullet>
-                            <RHSBullet><FormattedMessage defaultMessage='Create meeting summaries in a flash.'/></RHSBullet>
-                            <RHSBullet><FormattedMessage defaultMessage='Ask Agents anything to get quick answers.'/></RHSBullet>
+                            <RHSBullet><FormattedMessage id='eMUupPIl' defaultMessage='Get caught up quickly with instant summarization for channels and threads.'/></RHSBullet>
+                            <RHSBullet><FormattedMessage id='zrQ5LJLt' defaultMessage='Create meeting summaries in a flash.'/></RHSBullet>
+                            <RHSBullet><FormattedMessage id='1Hi/TDH+' defaultMessage='Ask Agents anything to get quick answers.'/></RHSBullet>
                         </ul>
                     </RHSText>
 
@@ -128,7 +128,7 @@ export default function RHS() {
         content = (
             <ThreadViewer
                 data-testid='rhs-thread-viewer'
-                inputPlaceholder={intl.formatMessage({defaultMessage: 'Reply...'})}
+                inputPlaceholder={intl.formatMessage({id: '/dm2sj3W', defaultMessage: 'Reply...'})}
                 rootPostId={selectedPostId}
                 useRelativeTimestamp={false}
                 isThreadView={false}

@@ -1,5 +1,17 @@
 [
   {
+    "id": "agents.analyze_thread",
+    "translation": "Sure, I will analyze this thread: %s/_redirect/pl/%s\n"
+  },
+  {
+    "id": "agents.find_action_items",
+    "translation": "Sure, I will find action items in this thread: %s/_redirect/pl/%s\n"
+  },
+  {
+    "id": "agents.find_open_questions",
+    "translation": "Sure, I will find open questions in this thread: %s/_redirect/pl/%s\n"
+  },
+  {
     "id": "agents.no_longer_access_error",
     "translation": "Sorry, you no longer have access to the original thread."
   },

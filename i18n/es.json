@@ -34,5 +34,17 @@
   {
     "id": "agents.summarize_transcription",
     "translation": "Claro, resumiré esta transcripción: %s/_redirect/pl/%s\n"
+  },
+  {
+    "id": "agents.find_action_items",
+    "translation": "Claro, encontraré los elementos de acción en este hilo: %s/_redirect/pl/%s\n"
+  },
+  {
+    "id": "agents.find_open_questions",
+    "translation": "Claro, encontraré las preguntas abiertas en este hilo: %s/_redirect/pl/%s\n"
+  },
+  {
+    "id": "agents.analyze_thread",
+    "translation": "Claro, analizaré este hilo: %s/_redirect/pl/%s\n"
   }
 ]

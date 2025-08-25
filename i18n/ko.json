@@ -1,0 +1,50 @@
+[
+  {
+    "id": "agents.no_longer_access_error",
+    "translation": "죄송합니다. 원본 스레드에 더 이상 접근할 수 없습니다."
+  },
+  {
+    "id": "agents.stream_to_post_access_llm_error",
+    "translation": "죄송합니다! LLM에 접근하는 중 오류가 발생했습니다. 자세한 내용은 서버 로그를 확인하세요."
+  },
+  {
+    "id": "agents.stream_to_post_llm_not_return",
+    "translation": "죄송합니다! LLM이 결과를 반환하지 않았습니다."
+  },
+  {
+    "id": "agents.summairize_subscription_error",
+    "translation": "죄송합니다! 문제가 발생했습니다. 자세한 내용은 서버 로그를 확인하세요."
+  },
+  {
+    "id": "agents.summarize_call_recording_processing",
+    "translation": "오디오를 텍스트로 변환 중입니다. 시간이 걸릴 수 있습니다..."
+  },
+  {
+    "id": "agents.summarize_call_recording_processing_error",
+    "translation": "죄송합니다! 문제가 발생했습니다. 자세한 내용은 서버 로그를 확인하세요."
+  },
+  {
+    "id": "agents.summarize_recording",
+    "translation": "네, 이 녹음을 요약하겠습니다: %s/_redirect/pl/%s\n"
+  },
+  {
+    "id": "agents.summarize_thread",
+    "translation": "네, 이 스레드를 요약하겠습니다: %s/_redirect/pl/%s\n"
+  },
+  {
+    "id": "agents.summarize_transcription",
+    "translation": "네, 이 텍스트를 요약하겠습니다: %s/_redirect/pl/%s\n"
+  },
+  {
+    "id": "agents.find_action_items",
+    "translation": "네, 이 스레드에서 액션 아이템을 찾겠습니다: %s/_redirect/pl/%s\n"
+  },
+  {
+    "id": "agents.find_open_questions",
+    "translation": "네, 이 스레드에서 열린 질문을 찾겠습니다: %s/_redirect/pl/%s\n"
+  },
+  {
+    "id": "agents.analyze_thread",
+    "translation": "네, 이 스레드를 분석하겠습니다: %s/_redirect/pl/%s\n"
+  }
+] 
