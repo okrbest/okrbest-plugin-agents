@@ -92,7 +92,7 @@ export default function RHS() {
         content = (
             <ThreadViewer
                 data-testid='rhs-thread-viewer'
-                inputPlaceholder={intl.formatMessage({defaultMessage: 'Reply...'})}
+                inputPlaceholder={intl.formatMessage({id: '/dm2sj3W', defaultMessage: 'Reply...'})}
                 rootPostId={selectedPostId}
                 useRelativeTimestamp={false}
                 isThreadView={false}

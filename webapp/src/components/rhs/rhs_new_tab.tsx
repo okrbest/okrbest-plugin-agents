@@ -159,20 +159,20 @@ const RHSNewTab = ({selectPost, setCurrentTab, activeBot}: Props) => {
     if (channelError) {
         editorComponent = (
             <div style={{textAlign: 'center', padding: '20px', color: 'var(--error-text)'}}>
-                <FormattedMessage defaultMessage='Failed to create chat channel. Please try again later.'/>
+                <FormattedMessage id='9nYnvJEv' defaultMessage='Failed to create chat channel. Please try again later.'/>
             </div>
         );
     } else if (creatingChannel || !botChannelId) {
         editorComponent = (
             <div style={{textAlign: 'center', padding: '20px'}}>
-                <FormattedMessage defaultMessage='Setting up chat channel...'/>
+                <FormattedMessage id='352It7KQ' defaultMessage='Setting up chat channel...'/>
             </div>
         );
     } else if (AdvancedTextEditor) {
         editorComponent = (
             <AdvancedTextEditor
                 channelId={botChannelId}
-                placeholder={intl.formatMessage({defaultMessage: 'Ask Agents anything...'})}
+                placeholder={intl.formatMessage({id: '1F6GhT33', defaultMessage: 'Ask Agents anything...'})}
                 isThreadView={true}
                 location={'RHS_COMMENT'}
                 afterSubmit={(result: {created?: {id: string}}) => {
@@ -187,7 +187,7 @@ const RHSNewTab = ({selectPost, setCurrentTab, activeBot}: Props) => {
         editorComponent = (
             <CreatePost
                 channelId={botChannelId}
-                placeholder={intl.formatMessage({defaultMessage: 'Ask Agents anything...'})}
+                placeholder={intl.formatMessage({id: '1F6GhT33', defaultMessage: 'Ask Agents anything...'})}
                 rootId={'ai_agents'}
                 onSubmit={async (p: any) => {
                     const post = {...p};
@@ -228,24 +228,24 @@ const RHSNewTab = ({selectPost, setCurrentTab, activeBot}: Props) => {
         <RHSPaddingContainer>
             <ReverseScroll>
                 <RHSImage/>
-                <RHSTitle><FormattedMessage defaultMessage='Ask Agents anything'/></RHSTitle>
-                <RHSText><FormattedMessage defaultMessage='Agents are here to help. Choose from the prompts below or write your own.'/></RHSText>
+                <RHSTitle><FormattedMessage id='AZfEIIEi' defaultMessage='Ask Agents anything'/></RHSTitle>
+                <RHSText><FormattedMessage id='kMoYLtG8' defaultMessage='Agents are here to help. Choose from the prompts below or write your own.'/></RHSText>
                 <QuestionOptions>
                     <OptionButton onClick={addBrainstormingIdeas}>
                         <LightbulbOutlineIcon/>
-                        <FormattedMessage defaultMessage='Brainstorm ideas'/>
+                        <FormattedMessage id='uLBt7sJr' defaultMessage='Brainstorm ideas'/>
                     </OptionButton>
                     <OptionButton onClick={addMeetingAgenda}>
                         <FormatListNumberedIcon/>
-                        <FormattedMessage defaultMessage='Meeting agenda'/>
+                        <FormattedMessage id='Ku669Gj+' defaultMessage='Meeting agenda'/>
                     </OptionButton>
                     <OptionButton onClick={addProsAndCons}>
                         <PlusMinus className='icon'>{'±'}</PlusMinus>
-                        <FormattedMessage defaultMessage='Pros and Cons'/>
+                        <FormattedMessage id='UvNpDP3m' defaultMessage='Pros and Cons'/>
                     </OptionButton>
                     <OptionButton onClick={addToDoList}>
                         <PlaylistCheckIcon/>
-                        <FormattedMessage defaultMessage='To-do list'/>
+                        <FormattedMessage id='eQUYygRa' defaultMessage='To-do list'/>
                     </OptionButton>
                 </QuestionOptions>
                 <CreatePostContainer
