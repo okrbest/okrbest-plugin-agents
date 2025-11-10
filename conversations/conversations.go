@@ -144,7 +144,7 @@ func (c *Conversations) ProcessUserRequest(bot *bots.Bot, postingUser *model.Use
 		bot,
 		postingUser,
 		channel,
-		c.contextBuilder.WithLLMContextDefaultTools(bot, mmapi.IsDMWith(bot.GetMMBot().UserId, channel)),
+		c.contextBuilder.WithLLMContextTools(bot, mmapi.IsDMWith(bot.GetMMBot().UserId, channel)),
 	)
 
 	// Check for auth errors in the tool store
@@ -361,11 +361,29 @@ func (c *Conversations) PostToAIPost(bot *bots.Bot, post *model.Post) llm.Post {
 		}
 	}
 
+	// Check for reasoning/thinking content
+	reasoning := ""
+	if reasoningProp := post.GetProp(streaming.ReasoningSummaryProp); reasoningProp != nil {
+		if reasoningStr, ok := reasoningProp.(string); ok {
+			reasoning = reasoningStr
+		}
+	}
+
+	// Check for reasoning signature (opaque verification field)
+	reasoningSignature := ""
+	if signatureProp := post.GetProp(streaming.ReasoningSignatureProp); signatureProp != nil {
+		if signatureStr, ok := signatureProp.(string); ok {
+			reasoningSignature = signatureStr
+		}
+	}
+
 	return llm.Post{
-		Role:    role,
-		Message: message,
-		Files:   filesForUpstream,
-		ToolUse: tools,
+		Role:               role,
+		Message:            message,
+		Files:              filesForUpstream,
+		ToolUse:            tools,
+		Reasoning:          reasoning,
+		ReasoningSignature: reasoningSignature,
 	}
 }
 
