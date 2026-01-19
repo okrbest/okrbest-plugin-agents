@@ -1,0 +1,236 @@
+---
+description: MCP (Model Context Protocol) 관련 규칙
+globs: ["mcp/**/*.go", "mcpserver/**/*.go", "api/mcp_handlers.go", "api/middleware_mcp.go"]
+---
+
+# MCP (Model Context Protocol) 도메인
+
+## 개요
+
+MCP(Model Context Protocol)는 LLM이 외부 도구와 리소스에 접근할 수 있게 하는 표준 프로토콜입니다.
+이 플러그인은 MCP 클라이언트(외부 MCP 서버 연결)와 MCP 서버(내장) 모두를 지원합니다.
+
+## 아키텍처
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      Agents Plugin                               │
+│                                                                  │
+│  ┌──────────────────┐          ┌──────────────────────────────┐ │
+│  │   MCP Client     │          │       MCP Server             │ │
+│  │    Manager       │          │      (Embedded)              │ │
+│  │                  │          │                              │ │
+│  │  ┌────────────┐  │          │  ┌─────────────────────────┐ │ │
+│  │  │ OAuth Mgr  │  │          │  │   Mattermost Tools      │ │ │
+│  │  └────────────┘  │          │  │   - search_posts        │ │ │
+│  │                  │          │  │   - get_channel_info    │ │ │
+│  │  ┌────────────┐  │          │  │   - get_user_info       │ │ │
+│  │  │MCP Clients │  │          │  │   - ...                 │ │ │
+│  │  └────────────┘  │          │  └─────────────────────────┘ │ │
+│  └────────┬─────────┘          └──────────────┬───────────────┘ │
+│           │                                    │                 │
+└───────────┼────────────────────────────────────┼─────────────────┘
+            │                                    │
+            ▼                                    ▼
+    ┌───────────────┐                   ┌───────────────┐
+    │ External MCP  │                   │ External MCP  │
+    │   Servers     │                   │   Clients     │
+    │  (Atlassian,  │                   │               │
+    │   Custom...)  │                   │               │
+    └───────────────┘                   └───────────────┘
+```
+
+## MCP 클라이언트 (`mcp/`)
+
+### 핵심 구조체
+
+#### ClientManager (`mcp/client_manager.go`)
+
+```go
+type ClientManager struct {
+    config         Config
+    log            pluginapi.LogService
+    pluginAPI      *pluginapi.Client
+    clientsMu      sync.RWMutex
+    clients        map[string]*UserClients // userID to UserClients
+    activity       map[string]time.Time    // userID to last activity time
+    cleanupTicker  *time.Ticker
+    closeChan      chan struct{}
+    clientTimeout  time.Duration
+    oauthManager   *OAuthManager
+    httpClient     *http.Client
+    embeddedClient *EmbeddedServerClient
+    toolsCache     *ToolsCache
+}
+
+func NewClientManager(config Config, log pluginapi.LogService, pluginAPI *pluginapi.Client, oauthManager *OAuthManager, embeddedServer EmbeddedMCPServer, httpClient *http.Client) *ClientManager
+```
+
+#### OAuthManager (`mcp/oauth_manager.go`)
+
+```go
+type OAuthManager struct {
+    pluginAPI   mmapi.Client
+    callbackURL string
+    httpClient  *http.Client
+}
+
+func NewOAuthManager(pluginAPI mmapi.Client, callbackURL string, httpClient *http.Client) *OAuthManager
+func (m *OAuthManager) loadOrCreateClientCredentials(ctx context.Context, serverURL string) (*ClientCredentials, error)
+```
+
+### MCP 서버 설정
+
+```json
+{
+    "mcpServers": [
+        {
+            "id": "atlassian",
+            "name": "Atlassian",
+            "url": "https://mcp.atlassian.com",
+            "authType": "oauth2",
+            "clientID": "...",
+            "clientSecret": "..."
+        }
+    ]
+}
+```
+
+## MCP 서버 (`mcpserver/`)
+
+### 내장 도구
+
+| 도구 | 파일 | 설명 |
+|------|------|------|
+| `search_posts` | `mcpserver/tools_search.go` | 포스트 검색 |
+| `get_channel_info` | `mcpserver/tools_channel.go` | 채널 정보 조회 |
+| `get_user_info` | `mcpserver/tools_user.go` | 사용자 정보 조회 |
+| `get_thread` | `mcpserver/tools_thread.go` | 스레드 조회 |
+| `create_post` | `mcpserver/tools_post.go` | 포스트 생성 |
+
+### 도구 추가
+
+```go
+// mcpserver/tools_{name}.go
+package mcpserver
+
+type MyToolHandler struct {
+    pluginAPI plugin.API
+}
+
+func (h *MyToolHandler) Handle(args map[string]interface{}) (string, error) {
+    // 도구 로직
+}
+
+// mcpserver/server.go에서 등록
+func (s *Server) registerTools() {
+    s.AddTool(Tool{
+        Name:        "my_tool",
+        Description: "My tool description",
+        Parameters:  myToolSchema,
+        Handler:     &MyToolHandler{pluginAPI: s.pluginAPI},
+    })
+}
+```
+
+### HTTP 엔드포인트
+
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `/api/v1/mcp/tools` | GET | 사용 가능한 도구 목록 |
+| `/api/v1/mcp/tools/{name}` | POST | 도구 실행 |
+| `/api/v1/mcp/resources` | GET | 리소스 목록 |
+
+## API 핸들러 (`api/`)
+
+### MCP 핸들러 (`api/mcp_handlers.go`)
+
+```go
+func (a *API) handleMCPListTools(w http.ResponseWriter, r *http.Request)
+func (a *API) handleMCPCallTool(w http.ResponseWriter, r *http.Request)
+func (a *API) handleMCPListResources(w http.ResponseWriter, r *http.Request)
+```
+
+### MCP 미들웨어 (`api/middleware_mcp.go`)
+
+```go
+// MCP 요청 인증
+func (a *API) mcpAuthMiddleware(next http.Handler) http.Handler
+```
+
+## 도구 호출 흐름
+
+```
+1. 사용자 메시지 수신
+2. 대화 컨텍스트 구성 + 사용 가능한 도구 목록
+3. LLM에 전송
+4. LLM이 tool_use 결정
+5. MCP 클라이언트/서버에서 도구 실행
+6. 결과를 대화 컨텍스트에 추가
+7. LLM에 재전송
+8. 최종 응답 생성
+```
+
+```go
+// conversations/tool_handling.go
+func (c *Conversations) handleToolCall(toolCall ToolCall) (string, error) {
+    switch toolCall.Server {
+    case "embedded":
+        return c.mcpServer.CallTool(toolCall.Name, toolCall.Args)
+    default:
+        return c.mcpManager.CallTool(toolCall.Server, toolCall.Name, toolCall.Args)
+    }
+}
+```
+
+## OAuth 콜백 처리
+
+### 콜백 엔드포인트
+
+```go
+// api/api_oauth.go
+func (a *API) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
+    // 1. 인증 코드 수신
+    // 2. 토큰 교환
+    // 3. 토큰 저장
+    // 4. 사용자에게 완료 알림
+}
+```
+
+### 등록 라우트
+
+```go
+// api/api.go
+r.HandleFunc("/oauth/callback/{serverID}", a.handleOAuthCallback).Methods("GET")
+```
+
+## 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `mcp/client_manager.go` | MCP 클라이언트 관리자 |
+| `mcp/client.go` | MCP 클라이언트 구현 |
+| `mcp/user_clients.go` | 사용자별 클라이언트 관리 |
+| `mcp/oauth_manager.go` | OAuth 토큰 관리 |
+| `mcp/oauth_store.go` | OAuth 토큰 저장소 |
+| `mcp/oauth_transport.go` | OAuth HTTP 전송 |
+| `mcp/oauth_metadata.go` | OAuth 메타데이터 |
+| `mcp/http_client.go` | HTTP 클라이언트 |
+| `mcp/tools_cache.go` | 도구 캐시 |
+| `mcp/dcrp.go` | Dynamic Client Registration Protocol |
+| `mcp/embedded_session_store.go` | 임베디드 세션 저장소 |
+| `mcpserver/server.go` | 내장 MCP 서버 |
+| `mcpserver/tools_*.go` | 내장 도구 구현 |
+| `api/mcp_handlers.go` | MCP HTTP 핸들러 |
+| `api/middleware_mcp.go` | MCP 인증 미들웨어 |
+| `api/api_oauth.go` | OAuth 콜백 처리 |
+
+---
+
+## Q&A 목록
+
+> 개발 중 생긴 질문들이 `q-{주제}.mdc` 파일로 이 폴더에 추가됩니다.
+
+| 질문 | 파일 |
+|------|------|
+| (예시) 새 MCP 도구 추가 방법은? | `q-new-tool.mdc` |

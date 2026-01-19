@@ -1,0 +1,287 @@
+---
+description: 봇 관리 관련 규칙
+globs: ["bots/**/*.go"]
+---
+
+# 봇 (Bots) 도메인
+
+## 개요
+
+봇 서비스는 AI 에이전트(봇)의 생성, 관리, LLM 연결을 담당합니다.
+서비스-봇 분리 아키텍처를 사용합니다.
+
+## 서비스-봇 아키텍처
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Services                                  │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │   OpenAI     │  │  Anthropic   │  │      Bedrock         │  │
+│  │   Service    │  │   Service    │  │      Service         │  │
+│  │              │  │              │  │                      │  │
+│  │  API Key     │  │  API Key     │  │  AWS Credentials     │  │
+│  │  Model: gpt-4│  │  Model: cla..│  │  Model: ...          │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘  │
+│         │                 │                      │              │
+└─────────┼─────────────────┼──────────────────────┼──────────────┘
+          │                 │                      │
+          ▼                 ▼                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                          Bots                                    │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │     AI       │  │   Analyst    │  │      Support         │  │
+│  │  Assistant   │  │     Bot      │  │        Bot           │  │
+│  │              │  │              │  │                      │  │
+│  │  ServiceID:  │  │  ServiceID:  │  │  ServiceID:          │  │
+│  │  openai-svc  │  │  anthropic.. │  │  bedrock-svc         │  │
+│  │              │  │              │  │                      │  │
+│  │  Persona:    │  │  Persona:    │  │  Persona:            │  │
+│  │  Helpful     │  │  Analytical  │  │  Supportive          │  │
+│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 설정 구조 (JSON)
+
+```json
+{
+    "services": [
+        {
+            "id": "service-uuid-1",
+            "name": "OpenAI Service",
+            "type": "openai",
+            "apiKey": "sk-...",
+            "defaultModel": "gpt-4o",
+            "orgId": ""
+        },
+        {
+            "id": "service-uuid-2",
+            "name": "Anthropic Service",
+            "type": "anthropic",
+            "apiKey": "sk-ant-...",
+            "defaultModel": "claude-3-sonnet-20240229"
+        }
+    ],
+    "bots": [
+        {
+            "id": "bot-001",
+            "name": "ai",
+            "displayName": "AI Assistant",
+            "serviceID": "service-uuid-1",
+            "customInstructions": "You are a helpful assistant.",
+            "enableVision": true,
+            "disableTools": false
+        }
+    ]
+}
+```
+
+## 핵심 구조체
+
+### Bot (`bots/bot.go`)
+
+```go
+type Bot struct {
+    cfg     llm.BotConfig      // 봇 설정 (name, displayName, permissions 등)
+    service llm.ServiceConfig  // 해결된 서비스 설정 (GetService()로 접근)
+    mmBot   *model.Bot         // Mattermost 봇 사용자
+    llm     llm.LanguageModel  // 초기화된 LLM 인스턴스
+}
+
+// 주요 메서드
+func (b *Bot) GetConfig() llm.BotConfig
+func (b *Bot) GetMMBot() *model.Bot
+func (b *Bot) LLM() llm.LanguageModel
+func (b *Bot) GetService() llm.ServiceConfig
+```
+
+> **중요**: `cfg.Service`나 `cfg.ServiceID`를 직접 사용하지 마세요. 항상 `GetService()`를 사용하세요.
+
+### MMBots (`bots/bots.go`)
+
+```go
+type MMBots struct {
+    ensureBotsClusterMutex cluster.MutexPluginAPI
+    pluginAPI              *pluginapi.Client
+    licenseChecker         *enterprise.LicenseChecker
+    config                 Config
+    llmUpstreamHTTPClient  *http.Client
+    tokenLogger            *mlog.Logger
+    metrics                llm.MetricsObserver
+
+    botsLock           sync.RWMutex
+    bots               []*Bot
+    lastEnsuredBotCfgs []llm.BotConfig
+}
+
+func New(mutexPluginAPI cluster.MutexPluginAPI, pluginAPI *pluginapi.Client, licenseChecker *enterprise.LicenseChecker, config Config, llmUpstreamHTTPClient *http.Client, tokenLogger *mlog.Logger, metrics llm.MetricsObserver) *MMBots
+```
+
+### 주요 메서드
+
+| 메서드 | 설명 |
+|--------|------|
+| `EnsureBots()` | Mattermost 봇 사용자 생성/업데이트 |
+| `GetBotByUsername(username string)` | 사용자명으로 봇 조회 |
+| `GetBotByID(botID string)` | 봇 ID로 조회 |
+| `GetBotByUsernameOrFirst(username string)` | 봇 조회 또는 첫 번째 봇 반환 |
+| `GetBotForDMChannel(channel *model.Channel)` | DM 채널의 봇 조회 |
+| `GetBotMentioned(text string)` | 텍스트에서 멘션된 봇 찾기 |
+| `GetAllBots()` | 모든 봇 반환 |
+| `IsAnyBot(userID string)` | 사용자가 AI 봇인지 확인 |
+
+## 멘션 처리 (`bots/mentions.go`)
+
+```go
+func userIsMentionedMarkdown(text string, username string) bool {
+    // @username 멘션 확인
+}
+
+func (b *MMBots) GetBotMentioned(text string) *Bot {
+    for _, bot := range b.bots {
+        if userIsMentionedMarkdown(text, bot.mmBot.Username) {
+            return bot
+        }
+    }
+    return nil
+}
+```
+
+## 권한 검사 (`bots/permissions.go`)
+
+### 권한 수준
+
+권한 수준 타입은 `llm/configuration.go`에 정의되어 있습니다:
+- `ChannelAccessLevel`: 채널 접근 수준 (All, Allow, Block, None)
+- `UserAccessLevel`: 사용자 접근 수준 (All, Allow, Block, None)
+
+상세 정의는 `features/llm/_index.mdc` 참조.
+
+### 권한 설정 예시
+
+```json
+{
+    "bots": [
+        {
+            "id": "bot-001",
+            "channelAccessLevel": 1,
+            "channelIDs": ["channel-id-1", "channel-id-2"],
+            "userAccessLevel": 0,
+            "userIDs": [],
+            "teamIDs": ["team-id-1"]
+        }
+    ]
+}
+```
+
+## LLM 인스턴스 생성 (`bots/bots.go`)
+
+```go
+func (b *MMBots) getLLM(serviceConfig llm.ServiceConfig, botConfig llm.BotConfig) (llm.LanguageModel, error) {
+    var result llm.LanguageModel
+    
+    switch serviceConfig.Type {
+    case llm.ServiceTypeOpenAI:
+        result = openai.New(config.OpenAIConfigFromServiceConfig(serviceConfig, botConfig), b.llmUpstreamHTTPClient)
+    case llm.ServiceTypeOpenAICompatible:
+        result = openai.NewCompatible(...)
+    case llm.ServiceTypeAzure:
+        result = openai.NewAzure(...)
+    case llm.ServiceTypeAnthropic:
+        result = anthropic.New(serviceConfig, botConfig, b.llmUpstreamHTTPClient)
+    case llm.ServiceTypeBedrock:
+        result, err = bedrock.New(serviceConfig, b.llmUpstreamHTTPClient)
+    case llm.ServiceTypeASage:
+        result = asage.New(serviceConfig, b.llmUpstreamHTTPClient)
+    case llm.ServiceTypeCohere:
+        result = openai.NewCompatible(...)  // Cohere 호환 엔드포인트
+    case llm.ServiceTypeMistral:
+        result = openai.NewCompatible(...)  // Mistral 호환 엔드포인트
+    default:
+        return nil, fmt.Errorf("unsupported service type: %s", serviceConfig.Type)
+    }
+
+    // 래퍼 체인
+    result = llm.NewLLMTruncationWrapper(result)
+    
+    if b.config.EnableTokenUsageLogging() {
+        result = llm.NewTokenUsageLoggingWrapper(result, botConfig.Name, b.tokenLogger, b.metrics)
+    }
+    
+    if b.config.EnableLLMLogging() {
+        result = llm.NewLanguageModelLogWrapper(b.pluginAPI.Log, result)
+    }
+
+    return result, nil
+}
+```
+
+## Mattermost 봇 관리
+
+### EnsureBots 흐름
+
+```go
+func (b *MMBots) EnsureBots() error {
+    // 1. 낙관적 검사 - 설정이 변경되지 않았으면 스킵
+    if botsAlreadyInitialized && botConfigsEqual(lastCfgs, currentBotCfgs) {
+        return nil
+    }
+    
+    // 2. 클러스터 뮤텍스 획득 (HA 환경)
+    mtx.Lock()
+    defer mtx.Unlock()
+    
+    // 3. 기존 봇 조회
+    previousMMBots, _ := b.pluginAPI.Bot.List(...)
+    
+    // 4. 설정에 없는 봇 비활성화
+    for _, bot := range previousMMBots {
+        if _, ok := aiBotsByUsername[bot.Username]; !ok {
+            b.pluginAPI.Bot.UpdateActive(bot.UserId, false)
+        }
+    }
+    
+    // 5. 설정된 봇 생성/업데이트
+    for _, bot := range bots {
+        if prevBot, ok := prevousMMBotsByUsername[bot.cfg.Name]; ok {
+            // 업데이트
+            bot.mmBot, _ = b.pluginAPI.Bot.Patch(prevBot.UserId, &model.BotPatch{...})
+        } else {
+            // 생성
+            b.pluginAPI.Bot.Create(bot.mmBot)
+        }
+        
+        // LLM 인스턴스 생성
+        bot.llm, _ = b.getLLM(bot.service, bot.cfg)
+    }
+    
+    return nil
+}
+```
+
+## 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `bots/bots.go` | MMBots 관리자, getLLM(), EnsureBots() |
+| `bots/bot.go` | Bot 구조체 및 메서드 |
+| `bots/bots_test.go` | 봇 테스트 |
+| `bots/mentions.go` | 멘션 처리 |
+| `bots/mentions_test.go` | 멘션 테스트 |
+| `bots/permissions.go` | 권한 검사 |
+| `bots/permissions_test.go` | 권한 테스트 |
+| `llm/configuration.go` | BotConfig, ServiceConfig 정의 |
+| `llm/service_types.go` | 서비스 타입 상수 |
+
+---
+
+## Q&A 목록
+
+> 개발 중 생긴 질문들이 `q-{주제}.mdc` 파일로 이 폴더에 추가됩니다.
+
+| 질문 | 파일 |
+|------|------|
+| (예시) 봇별로 다른 시스템 프롬프트를 사용하려면? | `q-custom-prompt.mdc` |

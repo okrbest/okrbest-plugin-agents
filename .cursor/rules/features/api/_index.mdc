@@ -1,0 +1,331 @@
+---
+description: HTTP API 관련 규칙
+globs: ["api/**/*.go"]
+---
+
+# API 도메인
+
+## 개요
+
+API 레이어는 HTTP 요청을 처리하고 서비스 레이어에 전달합니다.
+인증, 라우팅, 요청/응답 처리를 담당합니다. **Gin 프레임워크**를 사용합니다.
+
+## 디렉토리 구조
+
+```
+api/
+├── api.go              # 메인 API 구조체 및 라우터
+├── api_admin.go        # 관리자 전용 API
+├── api_channel.go      # 채널 관련 API
+├── api_llm_bridge.go   # LLM Bridge API (플러그인 간 연동)
+├── api_oauth.go        # OAuth 콜백 처리
+├── api_post.go         # 포스트 관련 API (요약, 분석 등)
+├── api_search.go       # 검색 API
+├── mcp_handlers.go     # MCP 관련 핸들러
+└── middleware_mcp.go   # MCP 인증 미들웨어
+```
+
+## API 구조체 (`api/api.go`)
+
+```go
+type API struct {
+    bots                  *bots.MMBots
+    conversationsService  *conversations.Conversations
+    meetingsService       *meetings.Service
+    indexerService        *indexer.Indexer
+    searchService         *search.Search
+    pluginAPI             *pluginapi.Client
+    metricsService        metrics.Metrics
+    metricsHandler        http.Handler
+    contextBuilder        *llmcontext.Builder
+    prompts               *llm.Prompts
+    config                Config
+    mmClient              mmapi.Client
+    dbClient              *mmapi.DBClient
+    licenseChecker        *enterprise.LicenseChecker
+    streamingService      streaming.Service
+    i18nBundle            *i18n.Bundle
+    mcpClientManager      MCPClientManager
+    mcpHandlers           *mcpserver.PluginMCPHandlers
+    llmUpstreamHTTPClient *http.Client
+}
+
+func New(
+    bots *bots.MMBots,
+    conversationsService *conversations.Conversations,
+    meetingsService *meetings.Service,
+    indexerService *indexer.Indexer,
+    searchService *search.Search,
+    pluginAPI *pluginapi.Client,
+    metricsService metrics.Metrics,
+    llmContextBuilder *llmcontext.Builder,
+    config Config,
+    prompts *llm.Prompts,
+    mmClient mmapi.Client,
+    dbClient *mmapi.DBClient,
+    licenseChecker *enterprise.LicenseChecker,
+    streamingService streaming.Service,
+    i18nBundle *i18n.Bundle,
+    mcpClientManager MCPClientManager,
+    mcpHandlers *mcpserver.PluginMCPHandlers,
+    llmUpstreamHTTPClient *http.Client,
+) *API
+```
+
+## Gin 라우트 등록 (`api/api.go`)
+
+```go
+func (a *API) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
+    router := gin.Default()
+    router.Use(a.ginlogger)
+    router.Use(a.metricsMiddleware)
+
+    // LLM Bridge API v1 routes - inter-plugin only
+    llmBridgeRoute := router.Group("/bridge/v1")
+    llmBridgeRoute.Use(a.interPluginAuthorizationRequired)
+    llmBridgeRoute.GET("/agents", a.handleGetAgents)
+    llmBridgeRoute.GET("/services", a.handleGetServices)
+
+    // Completion endpoints
+    completionRoute := llmBridgeRoute.Group("/completion")
+    completionRoute.POST("/agent/:agent", a.handleAgentCompletionStreaming)
+    completionRoute.POST("/agent/:agent/nostream", a.handleAgentCompletionNoStream)
+    completionRoute.POST("/service/:service", a.handleServiceCompletionStreaming)
+    completionRoute.POST("/service/:service/nostream", a.handleServiceCompletionNoStream)
+
+    // MCP server endpoints - grouped under /mcp-server/
+    if a.mcpHandlers != nil && a.config.MCP().EnablePluginServer {
+        mcpServerGroup := router.Group("/mcp-server")
+        mcpServerGroup.Use(a.mcpAuthMiddleware)
+        mcpServerGroup.Any("/mcp", a.delegateToMCPHandler)
+    }
+
+    router.Use(a.MattermostAuthorizationRequired)
+
+    router.GET("/oauth/callback", a.handleOAuthCallback)
+    router.GET("/ai_threads", a.handleGetAIThreads)
+    router.GET("/ai_bots", a.handleGetAIBots)
+
+    botRequiredRouter := router.Group("")
+    botRequiredRouter.Use(a.aiBotRequired)
+
+    // Post routes
+    postRouter := botRequiredRouter.Group("/post/:postid")
+    postRouter.Use(a.postAuthorizationRequired)
+    postRouter.POST("/react", a.handleReact)
+    postRouter.POST("/analyze", a.handleThreadAnalysis)
+    postRouter.POST("/transcribe/file/:fileid", a.handleTranscribeFile)
+    postRouter.POST("/summarize_transcription", a.handleSummarizeTranscription)
+    postRouter.POST("/stop", a.handleStop)
+    postRouter.POST("/regenerate", a.handleRegenerate)
+    postRouter.POST("/tool_call", a.handleToolCall)
+    postRouter.POST("/postback_summary", a.handlePostbackSummary)
+
+    // Channel routes
+    channelRouter := botRequiredRouter.Group("/channel/:channelid")
+    channelRouter.Use(a.channelAuthorizationRequired)
+    channelRouter.POST("/interval", a.handleInterval)
+
+    // Admin routes
+    adminRouter := router.Group("/admin")
+    adminRouter.Use(a.mattermostAdminAuthorizationRequired)
+    adminRouter.POST("/reindex", a.handleReindexPosts)
+    adminRouter.GET("/reindex/status", a.handleGetJobStatus)
+    adminRouter.POST("/reindex/cancel", a.handleCancelJob)
+    adminRouter.GET("/mcp/tools", a.handleGetMCPTools)
+    adminRouter.POST("/mcp/tools/cache/clear", a.handleClearMCPToolsCache)
+    adminRouter.POST("/models/fetch", a.handleFetchModels)
+
+    // Search routes
+    searchRouter := botRequiredRouter.Group("/search")
+    searchRouter.POST("", a.handleSearchQuery)
+    searchRouter.POST("/run", a.handleRunSearch)
+
+    router.ServeHTTP(w, r)
+}
+```
+
+## 주요 엔드포인트
+
+### LLM Bridge (`/bridge/v1/`)
+
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `/bridge/v1/agents` | GET | 에이전트 목록 조회 |
+| `/bridge/v1/services` | GET | 서비스 목록 조회 |
+| `/bridge/v1/completion/agent/:agent` | POST | 에이전트 스트리밍 완성 |
+| `/bridge/v1/completion/agent/:agent/nostream` | POST | 에이전트 비스트리밍 완성 |
+| `/bridge/v1/completion/service/:service` | POST | 서비스 스트리밍 완성 |
+| `/bridge/v1/completion/service/:service/nostream` | POST | 서비스 비스트리밍 완성 |
+
+### 포스트 액션 (`/post/:postid/`)
+
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `/post/:postid/react` | POST | 이모지 반응 제안 |
+| `/post/:postid/analyze` | POST | 스레드 분석 (요약, 액션 아이템 등) |
+| `/post/:postid/transcribe/file/:fileid` | POST | 파일 녹취 |
+| `/post/:postid/summarize_transcription` | POST | 녹취 요약 |
+| `/post/:postid/stop` | POST | 스트리밍 중지 |
+| `/post/:postid/regenerate` | POST | 응답 재생성 |
+| `/post/:postid/tool_call` | POST | 도구 호출 |
+| `/post/:postid/postback_summary` | POST | 요약 게시 |
+
+### 채널 (`/channel/:channelid/`)
+
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `/channel/:channelid/interval` | POST | 채널 요약 (시간 범위) |
+
+### 검색 (`/search/`)
+
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `/search` | POST | 시맨틱 검색 결과만 반환 |
+| `/search/run` | POST | 검색 실행 및 DM으로 응답 |
+
+### 관리자 (`/admin/`)
+
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `/admin/reindex` | POST | 전체 재인덱싱 시작 |
+| `/admin/reindex/status` | GET | 재인덱싱 작업 상태 |
+| `/admin/reindex/cancel` | POST | 재인덱싱 작업 취소 |
+| `/admin/mcp/tools` | GET | MCP 도구 목록 |
+| `/admin/mcp/tools/cache/clear` | POST | MCP 도구 캐시 초기화 |
+| `/admin/models/fetch` | POST | 모델 목록 가져오기 |
+
+### 기타
+
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `/oauth/callback` | GET | OAuth 콜백 처리 |
+| `/ai_threads` | GET | AI 대화 스레드 목록 |
+| `/ai_bots` | GET | AI 봇 목록 |
+
+## 미들웨어 (Gin)
+
+### Mattermost 인증 미들웨어
+
+```go
+func (a *API) MattermostAuthorizationRequired(c *gin.Context) {
+    userID := c.GetHeader("Mattermost-User-Id")
+    if userID == "" {
+        c.AbortWithStatus(http.StatusUnauthorized)
+        return
+    }
+}
+```
+
+### 관리자 인증 미들웨어
+
+```go
+func (a *API) mattermostAdminAuthorizationRequired(c *gin.Context) {
+    userID := c.GetHeader("Mattermost-User-Id")
+    if !a.pluginAPI.User.HasPermissionTo(userID, model.PermissionManageSystem) {
+        c.AbortWithStatus(http.StatusForbidden)
+        return
+    }
+}
+```
+
+### 플러그인 간 인증 미들웨어
+
+```go
+func (a *API) interPluginAuthorizationRequired(c *gin.Context) {
+    pluginID := c.GetHeader("Mattermost-Plugin-ID")
+    if pluginID == "" {
+        c.AbortWithStatus(http.StatusUnauthorized)
+        return
+    }
+}
+```
+
+### 봇 필수 미들웨어
+
+```go
+func (a *API) aiBotRequired(c *gin.Context) {
+    botUsername := c.Query("botUsername")
+    bot := a.bots.GetBotByUsernameOrFirst(botUsername)
+    if bot == nil {
+        c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("failed to get bot: %s", botUsername))
+        return
+    }
+    c.Set(ContextBotKey, bot)
+}
+```
+
+### MCP 인증 미들웨어 (`api/middleware_mcp.go`)
+
+```go
+func (a *API) mcpAuthMiddleware(c *gin.Context) {
+    // MCP 요청 인증 (Bearer token, OAuth 등)
+}
+```
+
+## Context Keys
+
+```go
+const (
+    ContextPostKey    = "post"
+    ContextChannelKey = "channel"
+    ContextBotKey     = "bot"
+)
+```
+
+## 에러 처리 패턴 (Gin)
+
+```go
+func (a *API) handleSomething(c *gin.Context) {
+    // 1. Context에서 값 가져오기
+    userID := c.GetHeader("Mattermost-User-Id")
+    bot := c.MustGet(ContextBotKey).(*bots.Bot)
+    postID := c.Param("postid")
+
+    // 2. 요청 바디 파싱
+    var req RequestBody
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.AbortWithError(http.StatusBadRequest, err)
+        return
+    }
+
+    // 3. 비즈니스 로직
+    result, err := a.service.DoSomething(req)
+    if err != nil {
+        a.pluginAPI.Log.Error("Error in DoSomething", "error", err.Error())
+        c.AbortWithError(http.StatusInternalServerError, err)
+        return
+    }
+
+    // 4. 응답
+    c.JSON(http.StatusOK, result)
+}
+```
+
+## 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `api/api.go` | 메인 API 구조체 및 Gin 라우터 |
+| `api/api_admin.go` | 관리자 API |
+| `api/api_channel.go` | 채널 API |
+| `api/api_llm_bridge.go` | LLM Bridge API |
+| `api/api_llm_bridge_test.go` | LLM Bridge 테스트 |
+| `api/api_oauth.go` | OAuth 콜백 |
+| `api/api_post.go` | 포스트 액션 API |
+| `api/api_search.go` | 검색 API |
+| `api/api_search_test.go` | 검색 테스트 |
+| `api/api_test.go` | API 테스트 |
+| `api/mcp_handlers.go` | MCP 핸들러 |
+| `api/middleware_mcp.go` | MCP 미들웨어 |
+| `api/fake_llm_test.go` | 테스트용 페이크 LLM |
+
+---
+
+## Q&A 목록
+
+> 개발 중 생긴 질문들이 `q-{주제}.mdc` 파일로 이 폴더에 추가됩니다.
+
+| 질문 | 파일 |
+|------|------|
+| (예시) 새 API 엔드포인트 추가 방법은? | `q-new-endpoint.mdc` |

@@ -1,0 +1,344 @@
+---
+description: LLM 통합 관련 규칙
+globs: ["llm/**/*.go", "anthropic/**/*.go", "openai/**/*.go", "bedrock/**/*.go", "asage/**/*.go"]
+---
+
+# LLM 통합 도메인
+
+## 개요
+
+LLM 추상화 계층은 다양한 LLM 공급자를 통합된 인터페이스로 제공합니다.
+
+## 지원 공급자
+
+| 공급자 | 디렉토리 | API 타입 | 스트리밍 지원 |
+|--------|----------|----------|--------------|
+| OpenAI | `openai/` | Chat Completion | ✅ |
+| Anthropic | `anthropic/` | Messages | ✅ |
+| AWS Bedrock | `bedrock/` | Converse | ✅ |
+| Azure OpenAI | `openai/` | Chat Completion | ✅ |
+| OpenAI Compatible | `openai/` | Chat Completion | ✅ |
+| Cohere | `openai/` (호환 모드) | Chat Completion | ✅ |
+| Mistral | `openai/` (호환 모드) | Chat Completion | ✅ |
+| ASage | `asage/` | Custom | ❌ |
+
+## 핵심 인터페이스 (`llm/`)
+
+### LanguageModel (`llm/language_model.go`)
+
+```go
+type LanguageModel interface {
+    ChatCompletion(conversation CompletionRequest, opts ...LanguageModelOption) (*TextStreamResult, error)
+    ChatCompletionNoStream(conversation CompletionRequest, opts ...LanguageModelOption) (string, error)
+    CountTokens(text string) int
+    InputTokenLimit() int
+}
+```
+
+### LanguageModelConfig
+
+```go
+type LanguageModelConfig struct {
+    Model              string
+    MaxGeneratedTokens int
+    EnableVision       bool
+    JSONOutputFormat   *jsonschema.Schema
+    ToolsDisabled      bool
+    ReasoningDisabled  bool
+}
+```
+
+### TextStreamResult (`llm/stream.go`)
+
+```go
+// 스트리밍 응답
+type TextStreamResult struct {
+    Stream <-chan TextStreamEvent
+}
+
+type TextStreamEvent struct {
+    Type  EventType
+    Value any
+}
+
+// EventType 종류
+const (
+    EventTypeText        // 텍스트 청크
+    EventTypeEnd         // 스트림 종료
+    EventTypeError       // 에러
+    EventTypeToolCalls   // 도구 호출
+    EventTypeReasoning   // 추론 요약
+    EventTypeReasoningEnd
+    EventTypeAnnotations // 인용/주석
+    EventTypeUsage       // 토큰 사용량
+)
+```
+
+### TokenUsage
+
+```go
+type TokenUsage struct {
+    InputTokens  int64 `json:"input_tokens"`
+    OutputTokens int64 `json:"output_tokens"`
+}
+```
+
+## 서비스 타입 상수 (`llm/service_types.go`)
+
+```go
+const (
+    ServiceTypeOpenAI           = "openai"
+    ServiceTypeOpenAICompatible = "openaicompatible"
+    ServiceTypeAzure            = "azure"
+    ServiceTypeASage            = "asage"
+    ServiceTypeAnthropic        = "anthropic"
+    ServiceTypeCohere           = "cohere"
+    ServiceTypeBedrock          = "bedrock"
+    ServiceTypeMistral          = "mistral"
+)
+```
+
+## 설정 구조체 (`llm/configuration.go`)
+
+### ServiceConfig
+
+```go
+type ServiceConfig struct {
+    ID                      string `json:"id"`
+    Name                    string `json:"name"`
+    Type                    string `json:"type"`
+    APIKey                  string `json:"apiKey"`
+    OrgID                   string `json:"orgId"`
+    DefaultModel            string `json:"defaultModel"`
+    APIURL                  string `json:"apiURL"`
+    Region                  string `json:"region"`  // AWS Bedrock용
+    AWSAccessKeyID          string `json:"awsAccessKeyID"`
+    AWSSecretAccessKey      string `json:"awsSecretAccessKey"`
+    InputTokenLimit         int    `json:"tokenLimit"`
+    StreamingTimeoutSeconds int    `json:"streamingTimeoutSeconds"`
+    SendUserID              bool   `json:"sendUserID"`
+    OutputTokenLimit        int    `json:"outputTokenLimit"`
+    UseResponsesAPI         bool   `json:"useResponsesAPI"`  // OpenAI Responses API 사용 여부
+}
+```
+
+### BotConfig
+
+```go
+type BotConfig struct {
+    ID                 string             `json:"id"`
+    Name               string             `json:"name"`
+    DisplayName        string             `json:"displayName"`
+    CustomInstructions string             `json:"customInstructions"`
+    ServiceID          string             `json:"serviceID"`
+    Model              string             `json:"model"`  // 선택적 모델 오버라이드
+    Service            *ServiceConfig     `json:"service,omitempty"`  // deprecated, 마이그레이션용
+    EnableVision       bool               `json:"enableVision"`
+    DisableTools       bool               `json:"disableTools"`
+    ChannelAccessLevel ChannelAccessLevel `json:"channelAccessLevel"`
+    ChannelIDs         []string           `json:"channelIDs"`
+    UserAccessLevel    UserAccessLevel    `json:"userAccessLevel"`
+    UserIDs            []string           `json:"userIDs"`
+    TeamIDs            []string           `json:"teamIDs"`
+    MaxFileSize        int64              `json:"maxFileSize"`
+    EnabledNativeTools []string           `json:"enabledNativeTools"`  // OpenAI: web_search, file_search, code_interpreter
+    ReasoningEnabled   bool               `json:"reasoningEnabled"`    // 추론/사고 기능 활성화
+    ReasoningEffort    string             `json:"reasoningEffort"`     // OpenAI: minimal, low, medium, high
+    ThinkingBudget     int                `json:"thinkingBudget"`      // Anthropic: 최소 1024 토큰
+}
+```
+
+### 권한 수준 타입
+
+```go
+type ChannelAccessLevel int
+const (
+    ChannelAccessLevelAll ChannelAccessLevel = iota  // 모든 채널 허용
+    ChannelAccessLevelAllow                          // 허용 목록만
+    ChannelAccessLevelBlock                          // 차단 목록 제외
+    ChannelAccessLevelNone                           // 모든 채널 차단
+)
+
+type UserAccessLevel int
+const (
+    UserAccessLevelAll UserAccessLevel = iota  // 모든 사용자 허용
+    UserAccessLevelAllow                       // 허용 목록만
+    UserAccessLevelBlock                       // 차단 목록 제외
+    UserAccessLevelNone                        // 모든 사용자 차단
+)
+```
+
+## 공급자별 구현
+
+### OpenAI (`openai/openai.go`)
+
+**설정 예시:**
+```json
+{
+    "type": "openai",
+    "apiKey": "sk-...",
+    "defaultModel": "gpt-4o"
+}
+```
+
+### Anthropic (`anthropic/anthropic.go`)
+
+**설정 예시:**
+```json
+{
+    "type": "anthropic",
+    "apiKey": "sk-ant-...",
+    "defaultModel": "claude-3-sonnet-20240229"
+}
+```
+
+### AWS Bedrock (`bedrock/bedrock.go`)
+
+**설정 예시:**
+```json
+{
+    "type": "bedrock",
+    "region": "us-west-2",
+    "defaultModel": "anthropic.claude-3-sonnet-20240229-v1:0"
+}
+```
+
+## 새 공급자 추가
+
+### 1. 디렉토리 생성
+
+```bash
+mkdir {provider}/
+```
+
+### 2. LanguageModel 구현
+
+```go
+// {provider}/{provider}.go
+package myprovider
+
+type MyProvider struct {
+    client *http.Client
+    model  string
+}
+
+func New(config Config) *MyProvider {
+    return &MyProvider{
+        client: &http.Client{},
+        model:  config.Model,
+    }
+}
+
+func (p *MyProvider) ChatCompletion(conversation llm.CompletionRequest, opts ...llm.LanguageModelOption) (*llm.TextStreamResult, error) {
+    // 스트리밍 구현
+}
+
+func (p *MyProvider) ChatCompletionNoStream(conversation llm.CompletionRequest, opts ...llm.LanguageModelOption) (string, error) {
+    // 비스트리밍 구현
+}
+
+func (p *MyProvider) CountTokens(text string) int {
+    // 토큰 수 계산
+}
+
+func (p *MyProvider) InputTokenLimit() int {
+    // 최대 입력 토큰 수
+}
+```
+
+### 3. bots/bots.go의 getLLM()에 등록
+
+```go
+func (b *MMBots) getLLM(serviceConfig llm.ServiceConfig, botConfig llm.BotConfig) (llm.LanguageModel, error) {
+    switch serviceConfig.Type {
+    // ... 기존 케이스
+    case "myprovider":
+        return myprovider.New(config)
+    }
+}
+```
+
+## 도구 호출 (Tool Calling)
+
+### Tool 정의 (`llm/tools.go`)
+
+```go
+type Tool struct {
+    Name        string
+    Description string
+    Parameters  map[string]interface{}
+}
+
+type ToolCall struct {
+    ID        string
+    Name      string
+    Arguments map[string]interface{}
+}
+
+type ToolResult struct {
+    ID      string
+    Content string
+    IsError bool
+}
+```
+
+### 도구 호출 흐름
+
+```
+1. 대화 컨텍스트 + 도구 정의 → LLM에 전송
+2. LLM이 도구 호출 결정 → EventTypeToolCalls 이벤트
+3. 도구 실행 → 결과 반환
+4. 결과 + 대화 컨텍스트 → LLM에 재전송
+5. 최종 응답 생성
+```
+
+## 토큰 사용량 추적 (`llm/token_tracking.go`)
+
+```go
+// TokenUsageLoggingWrapper wraps an LLM to log token usage
+type TokenUsageLoggingWrapper struct {
+    wrapped  LanguageModel
+    botName  string
+    logger   *mlog.Logger
+    metrics  MetricsObserver
+}
+
+func NewTokenUsageLoggingWrapper(wrapped LanguageModel, botName string, logger *mlog.Logger, metrics MetricsObserver) LanguageModel
+```
+
+## LLM 래퍼 체인
+
+`bots/bots.go`의 `getLLM()`에서 LLM 인스턴스는 여러 래퍼로 감싸집니다:
+
+```
+1. Base LLM (openai/anthropic/bedrock/...)
+2. → LLMTruncationWrapper (컨텍스트 자동 자르기)
+3. → TokenUsageLoggingWrapper (토큰 사용량 로깅, 선택적)
+4. → LanguageModelLogWrapper (LLM 요청/응답 로깅, 선택적)
+```
+
+## 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `llm/language_model.go` | 핵심 인터페이스 정의 |
+| `llm/configuration.go` | ServiceConfig, BotConfig 정의 |
+| `llm/service_types.go` | 서비스 타입 상수 |
+| `llm/completion_request.go` | 요청 구조체 |
+| `llm/context.go` | 컨텍스트 관리 |
+| `llm/stream.go` | 스트리밍 유틸리티 |
+| `llm/tools.go` | 도구 호출 구조체 |
+| `llm/token_tracking.go` | 토큰 사용량 추적 |
+| `llm/truncation.go` | 컨텍스트 자르기 |
+| `llm/logging.go` | LLM 로깅 래퍼 |
+| `bots/bots.go` | LLM 인스턴스 생성/관리 |
+
+---
+
+## Q&A 목록
+
+> 개발 중 생긴 질문들이 `q-{주제}.mdc` 파일로 이 폴더에 추가됩니다.
+
+| 질문 | 파일 |
+|------|------|
+| (예시) 새 LLM 공급자 추가 시 필요한 작업은? | `q-new-provider.mdc` |

@@ -1,0 +1,339 @@
+---
+description: 테스트 관련 규칙
+globs: ["**/*_test.go", "e2e/**/*.ts"]
+---
+
+# 테스트 (Testing) 도메인
+
+## 개요
+
+테스트는 단위 테스트(Go), 통합 테스트, E2E 테스트(Playwright), 프롬프트 평가로 구성됩니다.
+
+## 테스트 종류
+
+| 종류 | 위치 | 실행 명령 |
+|------|------|----------|
+| 단위 테스트 | `*_test.go` | `make test` |
+| E2E 테스트 | `e2e/tests/*.spec.ts` | `make e2e` |
+| 프롬프트 평가 | `evals/` | `make evals-ci` |
+| 벤치마크 | `*_test.go` | `go test -bench=...` |
+
+## 단위 테스트 (Go)
+
+### 테스트 규칙
+
+- 테이블 드리븐 테스트 사용
+- mocking 라이브러리 금지
+- 실제 구현 테스트 선호
+
+### 테이블 드리븐 테스트 예시
+
+```go
+func TestSomething(t *testing.T) {
+    tests := []struct {
+        name     string
+        input    string
+        expected string
+        wantErr  bool
+    }{
+        {
+            name:     "valid input",
+            input:    "hello",
+            expected: "HELLO",
+            wantErr:  false,
+        },
+        {
+            name:     "empty input",
+            input:    "",
+            expected: "",
+            wantErr:  true,
+        },
+    }
+    
+    for _, tc := range tests {
+        t.Run(tc.name, func(t *testing.T) {
+            result, err := DoSomething(tc.input)
+            
+            if tc.wantErr {
+                if err == nil {
+                    t.Errorf("expected error but got none")
+                }
+                return
+            }
+            
+            if err != nil {
+                t.Errorf("unexpected error: %v", err)
+                return
+            }
+            
+            if result != tc.expected {
+                t.Errorf("expected %q but got %q", tc.expected, result)
+            }
+        })
+    }
+}
+```
+
+### 테스트 실행
+
+```bash
+# 전체 테스트
+make test
+
+# 특정 패키지 테스트
+go test -v ./conversations/...
+
+# 특정 테스트
+go test -v ./api/... -run TestSomething
+
+# 커버리지
+go test -cover ./...
+```
+
+## E2E 테스트 (Playwright)
+
+### 디렉토리 구조
+
+```
+e2e/
+├── helpers/               # 테스트 헬퍼 유틸리티
+│   ├── ai-plugin.ts      # AI 플러그인 헬퍼
+│   ├── api-config.ts     # API 설정
+│   ├── bot-config.ts     # 봇 설정 헬퍼
+│   ├── llmbot-post.ts    # LLM 봇 포스트 헬퍼
+│   ├── mm.ts             # Mattermost 헬퍼
+│   ├── mmcontainer.ts    # MM 컨테이너
+│   ├── openai-mock.ts    # OpenAI 목 서버
+│   ├── plugincontainer.ts
+│   ├── real-api-container.ts
+│   ├── system-console-container.ts
+│   └── system-console.ts
+├── tests/                 # 테스트 스펙 파일
+│   ├── action-item-extraction/
+│   │   ├── basic-action-items.spec.ts
+│   │   ├── edge-cases.spec.ts
+│   │   ├── error-handling.spec.ts
+│   │   ├── follow-ups.spec.ts
+│   │   └── ui-verification.spec.ts
+│   ├── advanced-error-scenarios/
+│   │   └── network-errors.spec.ts
+│   ├── bot-configuration/
+│   │   ├── bot-identity-changes.spec.ts
+│   │   ├── reasoning-config.spec.ts
+│   │   └── service-changes.spec.ts
+│   ├── channel-summarization/
+│   │   └── basic-summarization.spec.ts
+│   ├── edge-cases/
+│   │   └── input-validation.spec.ts
+│   ├── llmbot-post-component/
+│   │   ├── citations-annotations.spec.ts
+│   │   ├── combined-features.spec.ts
+│   │   ├── debug-test.spec.ts
+│   │   ├── edge-cases.spec.ts
+│   │   ├── reasoning-display.spec.ts
+│   │   └── streaming-persistence.spec.ts
+│   ├── long-conversation-handling/
+│   │   └── pagination.spec.ts
+│   ├── multiple-bot-conversations/
+│   │   └── bot-switching.spec.ts
+│   ├── rhs-core/
+│   │   └── *.spec.ts
+│   ├── semantic-search/
+│   │   └── basic-search.spec.ts
+│   ├── smart-reactions/
+│   │   └── basic-reactions.spec.ts
+│   ├── system-console/
+│   │   └── *.spec.ts
+│   └── seed.spec.ts
+├── global-setup.ts        # 전역 설정
+├── global-teardown.ts     # 전역 정리
+├── playwright.config.ts   # Playwright 설정
+├── package.json
+└── tsconfig.json
+```
+
+### 테스트 실행
+
+```bash
+# 전체 E2E 테스트
+make e2e
+
+# 특정 파일 테스트
+cd e2e && npx playwright test tests/rhs-core/basic-chat.spec.ts --reporter=list
+
+# 특정 디렉토리 테스트
+cd e2e && npx playwright test tests/bot-configuration/ --reporter=list
+
+# UI 모드
+cd e2e && npx playwright test --ui
+
+# 디버그 모드
+cd e2e && npx playwright test --debug
+```
+
+### E2E 테스트 예시
+
+```typescript
+// e2e/tests/rhs-core/basic-chat.spec.ts
+import { test, expect } from '@playwright/test';
+
+test.describe('Chat with AI', () => {
+    test('should send message and receive response', async ({ page }) => {
+        // 채널 이동
+        await page.goto('/channels/town-square');
+        
+        // AI 패널 열기
+        await page.click('[data-testid="ai-panel-button"]');
+        
+        // 메시지 전송
+        await page.fill('[data-testid="message-input"]', 'Hello AI');
+        await page.click('[data-testid="send-button"]');
+        
+        // 응답 확인
+        await expect(page.locator('[data-testid="ai-response"]')).toBeVisible();
+    });
+});
+```
+
+## 프롬프트 평가 (Evals)
+
+### 목적
+
+LLM 응답 품질을 자동으로 평가하여 프롬프트 변경의 영향을 측정합니다.
+
+### 위치
+
+```
+evals/
+├── evals_test.go      # 평가 테스트
+├── evals.go           # 평가 실행기
+├── graders_test.go    # 평가기 테스트
+├── graders.go         # 평가기 구현
+├── record.go          # 결과 기록
+└── thread_export.go   # 스레드 내보내기
+```
+
+### 실행
+
+```bash
+# CI 모드 (비대화형)
+make evals-ci
+
+# 대화형 TUI
+make evals
+
+# 특정 제공자
+LLM_PROVIDER=openai make evals-ci
+
+# 특정 모델
+ANTHROPIC_MODEL=claude-3-opus-20240229 make evals-ci
+
+# 여러 제공자
+LLM_PROVIDER=openai,anthropic make evals-ci
+
+# OpenAI 호환 API
+LLM_PROVIDER=openaicompatible \
+    OPENAI_COMPATIBLE_API_URL=http://localhost:8080/v1 \
+    OPENAI_COMPATIBLE_MODEL=llama-3 \
+    make evals-ci
+```
+
+### 환경 변수
+
+| 변수 | 설명 |
+|------|------|
+| `LLM_PROVIDER` | 테스트할 LLM 제공자 (openai, anthropic, azure, openaicompatible, all) |
+| `OPENAI_API_KEY` | OpenAI API 키 |
+| `ANTHROPIC_API_KEY` | Anthropic API 키 |
+| `ANTHROPIC_MODEL` | Anthropic 모델 |
+| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI 엔드포인트 |
+| `AZURE_OPENAI_API_KEY` | Azure OpenAI API 키 |
+| `OPENAI_COMPATIBLE_API_URL` | OpenAI 호환 API URL |
+| `OPENAI_COMPATIBLE_MODEL` | OpenAI 호환 모델 |
+
+## 벤치마크 테스트
+
+### 스트리밍 벤치마크
+
+```bash
+# 전체 스트리밍 벤치마크
+go test -bench=. -benchmem ./llm/... ./streaming/...
+
+# 특정 벤치마크
+go test -bench=BenchmarkReadAll -benchmem ./llm/...
+
+# CPU 프로파일링
+go test -bench=BenchmarkReadAll -cpuprofile=cpu.prof ./llm/...
+```
+
+### 벤치마크 파일
+
+| 파일 | 측정 대상 |
+|------|----------|
+| `llm/stream_bench_test.go` | 스트림 읽기 성능 |
+| `llm/token_tracking_bench_test.go` | 토큰 추적 오버헤드 |
+| `llm/tools_bench_test.go` | 도구 호출 성능 |
+| `streaming/streaming_bench_test.go` | 스트리밍 서비스 성능 |
+
+### 벤치마크 예시
+
+```go
+func BenchmarkReadAll(b *testing.B) {
+    sizes := []int{100, 1000, 10000}
+    
+    for _, size := range sizes {
+        b.Run(fmt.Sprintf("size_%d", size), func(b *testing.B) {
+            b.ResetTimer()
+            for i := 0; i < b.N; i++ {
+                stream := createTestStream(size)
+                _, _ = stream.ReadAll()
+            }
+        })
+    }
+}
+```
+
+## 테스트 파일 명명
+
+| 파일 | 테스트 대상 |
+|------|------------|
+| `api_test.go` | `api.go` |
+| `api_search_test.go` | `api_search.go` |
+| `anthropic_test.go` | `anthropic.go` |
+| `mentions_test.go` | `mentions.go` |
+
+## 테스트 작성 가이드
+
+### DO (해야 할 것)
+
+- 테이블 드리븐 테스트 사용
+- 실제 구현 테스트
+- 명확한 테스트 케이스 이름
+- 에지 케이스 커버
+- 에러 케이스 테스트
+
+### DON'T (하지 말아야 할 것)
+
+- mocking 라이브러리 사용
+- 새 테스팅 라이브러리 도입
+- 구현 세부사항 테스트
+- 불필요하게 복잡한 테스트
+
+## 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `Makefile` | 테스트 명령 정의 |
+| `e2e/playwright.config.ts` | Playwright 설정 |
+| `e2e/helpers/` | E2E 테스트 헬퍼 |
+| `cmd/evalviewer/README.md` | 평가 뷰어 문서 |
+
+---
+
+## Q&A 목록
+
+> 개발 중 생긴 질문들이 `q-{주제}.mdc` 파일로 이 폴더에 추가됩니다.
+
+| 질문 | 파일 |
+|------|------|
+| (예시) E2E 테스트가 실패하는 경우 디버깅 방법은? | `q-e2e-debugging.mdc` |

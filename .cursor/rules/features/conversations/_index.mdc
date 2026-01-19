@@ -1,0 +1,258 @@
+---
+description: 대화 처리 서비스 관련 규칙
+globs: ["conversations/**/*.go"]
+---
+
+# 대화 (Conversations) 도메인
+
+## 개요
+
+대화 서비스는 사용자와 AI 에이전트 간의 대화를 관리합니다.
+메시지 처리, 컨텍스트 구성, 도구 호출, 응답 생성을 담당합니다.
+
+## 아키텍처
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Conversations Service                         │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │   Message    │  │  Context     │  │   Tool               │  │
+│  │   Handler    │  │  Builder     │  │   Handler            │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘  │
+│         │                 │                      │              │
+│         └─────────────────┼──────────────────────┘              │
+│                           │                                      │
+│                           ▼                                      │
+│                    ┌──────────────┐                              │
+│                    │   Streaming  │                              │
+│                    │   Service    │                              │
+│                    └──────────────┘                              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 핵심 구조체
+
+### Conversations (`conversations/conversations.go`)
+
+```go
+type Conversations struct {
+    prompts          *llm.Prompts
+    mmClient         mmapi.Client
+    streamingService streaming.Service
+    contextBuilder   *llmcontext.Builder
+    bots             *bots.MMBots
+    db               *mmapi.DBClient
+    licenseChecker   *enterprise.LicenseChecker
+    i18n             *i18n.Bundle
+    meetingsService  MeetingsService
+}
+
+func New(
+    prompts *llm.Prompts,
+    mmClient mmapi.Client,
+    streamingService streaming.Service,
+    contextBuilder *llmcontext.Builder,
+    botsService *bots.MMBots,
+    db *mmapi.DBClient,
+    licenseChecker *enterprise.LicenseChecker,
+    i18nBundle *i18n.Bundle,
+    meetingsService MeetingsService,
+) *Conversations
+```
+
+### AIThread
+
+```go
+type AIThread struct {
+    ID         string `json:"id"`
+    Message    string `json:"message"`
+    Title      string `json:"title"`
+    ChannelID  string `json:"channel_id"`
+    ReplyCount int    `json:"reply_count"`
+    UpdateAt   int64  `json:"update_at"`
+}
+```
+
+### MeetingsService Interface
+
+```go
+type MeetingsService interface {
+    GetCaptionsFileIDFromProps(post *model.Post) (fileID string, err error)
+    SummarizeTranscription(bot *bots.Bot, transcription *subtitles.Subtitles, context *llm.Context) (*llm.TextStreamResult, error)
+}
+```
+
+## 메시지 처리 흐름
+
+```
+1. 메시지 수신
+   │
+   ├── 봇 멘션 확인 (bots/mentions.go)
+   │
+   ├── 봇 DM 확인
+   │
+   └── 처리 대상인 경우:
+       │
+       ├── 2. 컨텍스트 구성 (handle_messages.go)
+       │   │
+       │   ├── 스레드 히스토리 로드
+       │   ├── 시스템 프롬프트 구성
+       │   └── 도구 목록 첨부
+       │
+       ├── 3. LLM 호출
+       │   │
+       │   └── 스트리밍 응답 시작
+       │
+       ├── 4. 도구 호출 처리 (tool_handling.go)
+       │   │
+       │   ├── tool_use 감지
+       │   ├── 도구 실행
+       │   └── 결과로 재호출
+       │
+       └── 5. 응답 게시
+           │
+           └── 스트리밍으로 포스트 업데이트
+```
+
+## 파일별 역할
+
+### `conversations.go`
+
+메인 서비스 구조체 및 초기화, 요약/분석 기능:
+
+```go
+// 스레드 요약
+func (c *Conversations) Summarize(...)
+// 채널 요약
+func (c *Conversations) ChannelSummary(...)
+// 액션 아이템 추출
+func (c *Conversations) ExtractActionItems(...)
+// 이모지 반응 제안
+func (c *Conversations) React(...)
+```
+
+### `handle_messages.go`
+
+메시지 처리 로직:
+
+```go
+func (c *Conversations) RespondToNewMessage(...)
+func (c *Conversations) ContinueConversation(...)
+```
+
+### `tool_handling.go`
+
+도구 호출 처리:
+
+```go
+func (c *Conversations) handleToolCalls(toolCalls []llm.ToolCall) ([]llm.ToolResult, error)
+func (c *Conversations) executeToolCall(call llm.ToolCall) (string, error)
+```
+
+### `regeneration.go`
+
+응답 재생성:
+
+```go
+func (c *Conversations) Regenerate(postID string, userID string) error
+```
+
+### `store.go`
+
+대화 메타데이터 저장소:
+
+```go
+func (c *Conversations) GetAIThreads(userID string) ([]AIThread, error)
+```
+
+## 컨텍스트 구성 (`llmcontext/`)
+
+### Builder (`llmcontext/llm_context.go`)
+
+```go
+type Builder struct {
+    pluginAPI       *pluginapi.Client
+    toolProvider    ToolProvider
+    mcpToolProvider MCPToolProvider
+    configProvider  ConfigProvider
+}
+
+func NewLLMContextBuilder(
+    pluginAPI *pluginapi.Client,
+    toolProvider ToolProvider,
+    mcpToolProvider MCPToolProvider,
+    configProvider ConfigProvider,
+) *Builder
+
+// 사용자 요청 컨텍스트 빌드
+func (b *Builder) BuildLLMContextUserRequest(bot *bots.Bot, requestingUser *model.User, channel *model.Channel, opts ...llm.ContextOption) *llm.Context
+```
+
+### ToolProvider Interface
+
+```go
+type ToolProvider interface {
+    GetTools(bot *bots.Bot) []llm.Tool
+}
+```
+
+### MCPToolProvider Interface
+
+```go
+type MCPToolProvider interface {
+    GetToolsForUser(userID string) ([]llm.Tool, *mcp.Errors)
+}
+```
+
+## 스레드 관리 (`threads/`)
+
+```go
+// threads/threads.go
+type Threads struct {
+    pluginAPI *pluginapi.Client
+}
+
+func (t *Threads) GetThreadPosts(rootID string) ([]*model.Post, error)
+```
+
+## 응답 스트리밍
+
+```go
+func (c *Conversations) streamResponse(bot *bots.Bot, stream *llm.TextStreamResult, post *model.Post) error {
+    // 스트리밍 서비스로 전달
+    return c.streamingService.StreamToPost(ctx, stream, post, userLocale)
+}
+```
+
+## 상수
+
+```go
+const ThreadIDProp = "referenced_thread"
+const AnalysisTypeProp = "prompt_type"
+```
+
+## 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `conversations/conversations.go` | 메인 서비스, 요약/분석 기능 |
+| `conversations/handle_messages.go` | 메시지 처리 |
+| `conversations/handle_messages_test.go` | 메시지 처리 테스트 |
+| `conversations/tool_handling.go` | 도구 호출 처리 |
+| `conversations/regeneration.go` | 응답 재생성 |
+| `conversations/store.go` | 대화 저장소 |
+| `conversations/conversations_test.go` | 테스트 |
+| `llmcontext/llm_context.go` | 컨텍스트 빌더 |
+| `threads/threads.go` | 스레드 관리 |
+| `bots/mentions.go` | 멘션 감지 |
+
+---
+
+## Q&A 목록
+
+> 개발 중 생긴 질문들이 `q-{주제}.mdc` 파일로 이 폴더에 추가됩니다.
+
+| 질문 | 파일 |
+|------|------|
+| (예시) 대화 컨텍스트 크기 제한은 어떻게 하나? | `q-context-limit.mdc` |

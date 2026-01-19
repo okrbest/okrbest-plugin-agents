@@ -1,0 +1,316 @@
+---
+description: 트러블슈팅 가이드
+globs: ["**/*"]
+---
+
+# 트러블슈팅 (Troubleshooting) 도메인
+
+## 개요
+
+이 문서는 개발 및 운영 중 발생하는 일반적인 문제와 해결 방법을 정리합니다.
+
+## 빌드 문제
+
+### 문제: `make deploy` 실패
+
+**증상:**
+```
+Error: failed to upload plugin
+```
+
+**해결:**
+1. 환경 변수 확인:
+```bash
+echo $MM_SERVICESETTINGS_SITEURL
+echo $MM_ADMIN_USERNAME
+echo $MM_ADMIN_PASSWORD
+```
+
+2. Mattermost 서버 실행 확인:
+```bash
+curl $MM_SERVICESETTINGS_SITEURL/api/v4/system/ping
+```
+
+3. 관리자 권한 확인
+
+### 문제: Go 빌드 에러
+
+**증상:**
+```
+go: module requires Go 1.24
+```
+
+**해결:**
+```bash
+# Go 버전 확인
+go version
+
+# Go 업그레이드 (macOS)
+brew upgrade go
+```
+
+### 문제: npm 빌드 에러
+
+**증상:**
+```
+npm ERR! code ERESOLVE
+```
+
+**해결:**
+```bash
+cd webapp
+rm -rf node_modules package-lock.json
+npm install
+```
+
+## LLM 연동 문제
+
+### 문제: API 키 오류
+
+**증상:**
+```
+Error: Invalid API key
+```
+
+**해결:**
+1. 시스템 콘솔에서 API 키 확인
+2. 키 형식 확인:
+   - OpenAI: `sk-...`
+   - Anthropic: `sk-ant-...`
+3. 키 권한 및 사용량 한도 확인
+
+### 문제: 모델을 찾을 수 없음
+
+**증상:**
+```
+Error: Model not found: gpt-4o
+```
+
+**해결:**
+1. 모델명 정확성 확인
+2. API 키에 해당 모델 접근 권한 확인
+3. 지원 모델 목록 확인
+
+### 문제: Rate Limit 초과
+
+**증상:**
+```
+Error: Rate limit exceeded
+```
+
+**해결:**
+1. 요청 빈도 줄이기
+2. API 요금제 업그레이드
+3. 재시도 로직 확인
+
+## 데이터베이스 문제
+
+### 문제: pgvector 확장 없음
+
+**증상:**
+```
+Error: extension "vector" does not exist
+```
+
+**해결:**
+```sql
+-- PostgreSQL에서 실행
+CREATE EXTENSION vector;
+```
+
+### 문제: 인덱싱 실패
+
+**증상:**
+```
+Error: Failed to index post
+```
+
+**해결:**
+1. 임베딩 서비스 상태 확인
+2. 데이터베이스 연결 확인
+3. 로그 확인:
+```bash
+tail -f /var/log/mattermost/mattermost.log | grep -i "agents"
+```
+
+## MCP 문제
+
+### 문제: MCP 서버 연결 실패
+
+**증상:**
+```
+Error: Failed to connect to MCP server
+```
+
+**해결:**
+1. MCP 서버 URL 확인
+2. 네트워크 연결 확인
+3. 인증 정보 확인
+
+### 문제: OAuth 인증 실패
+
+**증상:**
+```
+Error: OAuth callback failed
+```
+
+**해결:**
+1. Client ID/Secret 확인
+2. 콜백 URL 설정 확인
+3. OAuth 제공자 설정 확인
+
+## 스트리밍 문제
+
+### 문제: 스트리밍 응답이 표시되지 않음
+
+**증상:**
+- 응답이 전혀 나타나지 않거나
+- 완료 후에만 한꺼번에 표시됨
+
+**해결:**
+1. WebSocket 연결 확인
+2. 브라우저 개발자 도구에서 네트워크 탭 확인
+3. 플러그인 로그 확인
+
+### 문제: 스트리밍 중 끊김
+
+**증상:**
+```
+Error: Stream interrupted
+```
+
+**해결:**
+1. 네트워크 안정성 확인
+2. 타임아웃 설정 확인
+3. LLM 제공자 상태 확인
+
+## 권한 문제
+
+### 문제: 봇에 접근할 수 없음
+
+**증상:**
+```
+Error: Forbidden
+```
+
+**해결:**
+1. 봇 권한 설정 확인
+2. 사용자가 허용된 팀/채널에 있는지 확인
+3. 라이선스 상태 확인 (다중 에이전트는 라이선스 필요)
+
+### 문제: 관리자 API 접근 불가
+
+**증상:**
+```
+Error: Forbidden - Admin access required
+```
+
+**해결:**
+1. 시스템 관리자 권한 확인
+2. Mattermost 역할 확인
+
+## 라이선스 문제
+
+### 문제: 기능이 비활성화됨
+
+**증상:**
+- 다중 에이전트 설정 불가
+- 시맨틱 검색 비활성화
+- MCP 지원 비활성화
+
+**해결:**
+라이선스 요구사항 확인:
+
+| 기능 | 라이선스 필요 여부 |
+|------|------------------|
+| 기본 에이전트 구성 (단일 에이전트) | 불필요 |
+| DM 및 채널에서 에이전트와 채팅 | 불필요 |
+| 이미지 분석 (비전 기능) | 불필요 |
+| 기본 도구 통합 | 불필요 |
+| 다중 에이전트 구성 | Entry, Enterprise+ |
+| 세분화된 접근 제어 | Entry, Enterprise+ |
+| 임베딩 검색 (시맨틱 AI 검색) | Entry, Enterprise+ |
+| MCP 지원 | Entry, Enterprise+ |
+| 사용량 분석 및 토큰 추적 | Entry, Enterprise+ |
+| AI 액션 메뉴 (스레드 요약) | Entry, Enterprise+ |
+| 채널 요약 (읽지 않은 메시지) | Entry, Enterprise+ |
+| 녹음된 회의 녹취 및 요약 | Entry, Enterprise+ |
+
+## 로그 확인
+
+### Mattermost 서버 로그
+
+```bash
+# 실시간 로그
+tail -f /var/log/mattermost/mattermost.log
+
+# 플러그인 관련 로그만
+tail -f /var/log/mattermost/mattermost.log | grep -i "agents\|mattermost-ai"
+```
+
+### 플러그인 로그 레벨 설정
+
+시스템 콘솔 > Logging > Enable Debug Logging
+
+### 웹앱 로그
+
+브라우저 개발자 도구 > Console
+
+## 디버깅 도구
+
+### Go 디버깅
+
+```bash
+# dlv로 디버깅
+dlv debug ./cmd/evalviewer
+
+# 테스트 디버깅
+dlv test ./conversations/... -test.run TestSomething
+```
+
+### 네트워크 디버깅
+
+```bash
+# API 요청 테스트
+curl -X POST $MM_SERVICESETTINGS_SITEURL/plugins/mattermost-ai/api/v1/search \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"query": "test"}'
+```
+
+## 일반적인 해결 패턴
+
+### 1. 로그 확인
+```bash
+tail -f /var/log/mattermost/mattermost.log | grep -i "error\|warn"
+```
+
+### 2. 플러그인 재시작
+시스템 콘솔 > Plugins > Agents > Disable > Enable
+
+### 3. 설정 검증
+시스템 콘솔 > Plugins > Agents에서 모든 설정 확인
+
+### 4. 캐시 초기화
+```bash
+# 웹앱 캐시 초기화
+cd webapp
+rm -rf node_modules/.cache
+npm run build
+```
+
+### 5. 클린 빌드
+```bash
+make clean
+make deploy
+```
+
+---
+
+## Q&A 목록
+
+> 개발 중 생긴 문제와 해결 방법이 `q-{주제}.mdc` 파일로 이 폴더에 추가됩니다.
+
+| 질문 | 파일 |
+|------|------|
+| (예시) 특정 LLM 제공자에서만 발생하는 문제 해결 | `q-provider-specific-issue.mdc` |

@@ -1,0 +1,271 @@
+---
+description: 검색 및 임베딩 관련 규칙
+globs: ["search/**/*.go", "embeddings/**/*.go", "indexer/**/*.go", "postgres/**/*.go"]
+---
+
+# 검색 (Search) 도메인
+
+## 개요
+
+시맨틱 검색 시스템은 pgvector를 사용하여 자연어 검색을 지원합니다.
+임베딩 생성, 인덱싱, 검색 기능을 제공합니다.
+
+## 아키텍처
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       Search System                              │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │   Search     │  │   Indexer    │  │   Embeddings         │  │
+│  │   Service    │  │   Service    │  │   Provider           │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘  │
+│         │                 │                      │              │
+│         └─────────────────┼──────────────────────┘              │
+│                           │                                      │
+│                           ▼                                      │
+│                    ┌──────────────┐                              │
+│                    │  PostgreSQL  │                              │
+│                    │  (pgvector)  │                              │
+│                    └──────────────┘                              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## pgvector 설정
+
+### 필수 조건
+
+- PostgreSQL 데이터베이스
+- pgvector 확장 설치
+
+```sql
+-- pgvector 확장 활성화
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+### 테이블 스키마
+
+```sql
+-- llm_posts_embeddings 테이블
+CREATE TABLE llm_posts_embeddings (
+    post_id VARCHAR(26) PRIMARY KEY,
+    embedding vector(1536),  -- OpenAI text-embedding-3-small 차원
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 인덱스 (HNSW)
+CREATE INDEX ON llm_posts_embeddings 
+    USING hnsw (embedding vector_cosine_ops);
+```
+
+## 핵심 컴포넌트
+
+### Search Service (`search/search.go`)
+
+```go
+type Search struct {
+    embeddings.EmbeddingSearch  // 임베딩 검색 인터페이스 (임베딩)
+    mmclient         mmapi.Client
+    prompts          *llm.Prompts
+    streamingService streaming.Service
+    licenseChecker   *enterprise.LicenseChecker
+}
+
+func New(
+    search embeddings.EmbeddingSearch,
+    mmclient mmapi.Client,
+    prompts *llm.Prompts,
+    streamingService streaming.Service,
+    licenseChecker *enterprise.LicenseChecker,
+) *Search
+
+// Enabled returns true if the search service is enabled and functional
+func (s *Search) Enabled() bool
+```
+
+### Request/Response 타입
+
+```go
+type Request struct {
+    Query      string `json:"query"`
+    TeamID     string `json:"teamId"`
+    ChannelID  string `json:"channelId"`
+    MaxResults int    `json:"maxResults"`
+}
+
+type Response struct {
+    Answer    string      `json:"answer"`
+    Results   []RAGResult `json:"results"`
+    PostID    string      `json:"postid,omitempty"`
+    ChannelID string      `json:"channelid,omitempty"`
+}
+
+type RAGResult struct {
+    PostID      string  `json:"postId"`
+    ChannelID   string  `json:"channelId"`
+    ChannelName string  `json:"channelName"`
+    UserID      string  `json:"userId"`
+    Username    string  `json:"username"`
+    Content     string  `json:"content"`
+    Score       float32 `json:"score"`
+}
+```
+
+### 상수
+
+```go
+const (
+    SearchResultsProp = "search_results"
+    SearchQueryProp   = "search_query"
+)
+```
+
+### EmbeddingSearch Interface (`embeddings/`)
+
+```go
+// embeddings/embeddings.go
+type EmbeddingSearch interface {
+    Search(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error)
+    Index(ctx context.Context, postID string, content string) error
+}
+```
+
+### Composite Embeddings (`embeddings/composite.go`)
+
+여러 임베딩 제공자를 조합:
+
+```go
+type Composite struct {
+    primary   EmbeddingSearch
+    fallbacks []EmbeddingSearch
+}
+```
+
+### Indexer Service (`indexer/indexer.go`)
+
+```go
+type Indexer struct {
+    embeddings EmbeddingSearch
+    pluginAPI  *pluginapi.Client
+    chunker    *chunking.Chunker
+}
+
+func (i *Indexer) IndexPost(post *model.Post) error
+func (i *Indexer) ReindexAll() error
+```
+
+### Postgres (`postgres/postgres.go`)
+
+```go
+type Postgres struct {
+    db *sql.DB
+}
+
+func (p *Postgres) SimilaritySearch(embedding []float32, opts SearchOptions) ([]SearchResult, error)
+func (p *Postgres) SaveEmbedding(postID string, embedding []float32) error
+```
+
+## 텍스트 청킹 (`chunking/`)
+
+### Chunker (`chunking/chunker.go`)
+
+```go
+type Chunker struct {
+    maxChunkSize int
+    overlap      int
+}
+
+func (c *Chunker) Chunk(text string) []string
+```
+
+### 청킹 전략
+
+| 전략 | 설명 |
+|------|------|
+| 문장 기반 | 문장 경계에서 분할 |
+| 토큰 기반 | 토큰 수 기준 분할 |
+| 문단 기반 | 문단 경계에서 분할 |
+
+## API 엔드포인트
+
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `/api/v1/search` | POST | 시맨틱 검색 |
+| `/api/v1/admin/reindex` | POST | 전체 재인덱싱 |
+
+### 검색 요청/응답
+
+```json
+// 요청
+{
+    "query": "프로젝트 일정 관련 논의",
+    "teamId": "...",
+    "channelId": "...",
+    "maxResults": 10
+}
+
+// 응답
+{
+    "answer": "AI가 생성한 답변...",
+    "results": [
+        {
+            "postId": "...",
+            "channelId": "...",
+            "channelName": "Town Square",
+            "userId": "...",
+            "username": "john.doe",
+            "content": "...",
+            "score": 0.85
+        }
+    ]
+}
+```
+
+## 인덱싱 트리거
+
+### 자동 인덱싱
+
+```go
+// server/plugin.go - MessageHasBeenPosted 훅
+func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
+    // 새 포스트 인덱싱
+    p.indexer.IndexPost(post)
+}
+```
+
+### 수동 재인덱싱
+
+```bash
+# 관리자 API를 통한 재인덱싱
+curl -X POST /plugins/mattermost-ai/api/v1/admin/reindex \
+    -H "Authorization: Bearer $TOKEN"
+```
+
+## 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `search/search.go` | 검색 서비스 메인 |
+| `search/embeddings.go` | 검색 관련 임베딩 유틸리티 |
+| `embeddings/embeddings.go` | 임베딩 인터페이스 |
+| `embeddings/composite.go` | 복합 임베딩 제공자 |
+| `embeddings/mock_provider.go` | 테스트용 목 제공자 |
+| `indexer/indexer.go` | 인덱싱 서비스 |
+| `indexer/indexer_job.go` | 인덱싱 작업 |
+| `postgres/postgres.go` | PostgreSQL 연동 |
+| `chunking/chunker.go` | 텍스트 청킹 |
+| `chunking/text_splitting.go` | 텍스트 분할 유틸리티 |
+| `api/api_search.go` | 검색 API 핸들러 |
+| `api/api_admin.go` | 관리자 API (재인덱싱) |
+
+---
+
+## Q&A 목록
+
+> 개발 중 생긴 질문들이 `q-{주제}.mdc` 파일로 이 폴더에 추가됩니다.
+
+| 질문 | 파일 |
+|------|------|
+| 채널 대화 임베딩 프로세스는 어떻게 동작해? | `q-channel-embedding-process.mdc` |
+| (예시) 임베딩 모델을 변경하려면? | `q-change-embedding-model.mdc` |

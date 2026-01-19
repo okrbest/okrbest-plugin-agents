@@ -1,0 +1,156 @@
+---
+description: 프로젝트 전체 규칙 및 컨텍스트
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# Mattermost Agents 플러그인 프로젝트
+
+## 프로젝트 개요
+
+- **프로젝트명**: Mattermost Agents (AI Plugin)
+- **목적**: Mattermost 내 AI 기능 통합 플러그인 (LLM, MCP, 시맨틱 검색)
+- **최소 서버 버전**: Mattermost 10.0 (v9.11+ ESR 지원)
+
+## 기술 스택
+
+| 영역 | 기술 |
+|------|------|
+| 서버 | Go 1.24+ |
+| 프론트엔드 | TypeScript, React, styled-components |
+| 빌드 | Makefile + npm + Webpack |
+| 데이터베이스 | PostgreSQL (pgvector 확장 필요) |
+| 상태 관리 | Redux |
+| LLM | OpenAI, Anthropic, AWS Bedrock, Azure, 기타 |
+
+## 디렉토리 구조
+
+```
+okrbest-plugin-agents/
+├── anthropic/        # Anthropic Claude 통합
+├── api/              # HTTP API 핸들러
+├── asage/            # ASage LLM 통합 (실험적)
+├── bedrock/          # AWS Bedrock 통합
+├── bots/             # 봇 관리 및 LLM 래퍼
+├── chunking/         # 텍스트 청킹 알고리즘
+├── config/           # 플러그인 설정
+├── conversations/    # 대화 처리 서비스
+├── embeddings/       # 임베딩 생성
+├── evals/            # 프롬프트 평가
+├── format/           # 출력 포맷팅
+├── indexer/          # 콘텐츠 인덱싱
+├── llm/              # LLM 추상화 계층
+├── llmcontext/       # 컨텍스트 빌딩
+├── mcp/              # MCP 클라이언트
+├── mcpserver/        # MCP 서버 (내장)
+├── meetings/         # 회의 녹취/요약
+├── metrics/          # Prometheus 메트릭
+├── mmapi/            # Mattermost API 래퍼
+├── mmtools/          # Mattermost 도구
+├── openai/           # OpenAI 통합
+├── postgres/         # PostgreSQL 통합
+├── prompts/          # 프롬프트 템플릿 (.tmpl)
+├── search/           # 시맨틱 검색
+├── server/           # 플러그인 서버 메인
+├── streaming/        # 스트리밍 처리
+├── threads/          # 스레드 컨텍스트
+├── webapp/           # React 프론트엔드
+├── spec-docs/        # 설계 문서
+└── docs/             # 사용자 문서
+```
+
+## 핵심 기능
+
+| 기능 | 상태 | 설명 |
+|------|------|------|
+| 다중 AI 어시스턴트 | ✅ 완료 | 여러 에이전트 구성 |
+| 스레드/채널 요약 | ✅ 완료 | 요약 생성 |
+| 액션 아이템 추출 | ✅ 완료 | 자동 추출 |
+| 회의 녹취 | ✅ 완료 | 녹음 녹취 및 요약 |
+| 시맨틱 검색 | ✅ 완료 | pgvector 기반 |
+| MCP 통합 | ✅ 완료 | 외부 도구 연동 |
+| 스트리밍 응답 | ✅ 완료 | 실시간 응답 스트리밍 |
+| 비전 기능 | ✅ 완료 | 이미지 분석 |
+
+## 코딩 규칙
+
+### 공통
+- 모든 응답은 **한국어**로 작성
+- 기존 코드 스타일과 패턴을 따를 것
+- 불필요한 추상화나 over-engineering 금지
+- 한 번에 하나의 기능만 변경
+
+### 서버 (Go)
+- Go standard formatting (goimports)
+- snake_case 파일명
+- 모든 에러 명시적으로 체크
+- 테이블 드리븐 테스트 작성
+- mocking이나 새 테스팅 라이브러리 금지
+
+### 웹앱 (TypeScript/React)
+- 4-space 들여쓰기
+- PascalCase 컴포넌트명
+- styled-components 사용 (style props 금지)
+- strict typing 준수
+- 모든 텍스트 i18n 처리
+
+### 테스트
+- 서버: `*_test.go` 파일
+- 웹앱: `*.test.tsx` 파일
+- 변경된 코드에 대한 테스트 작성 권장
+- E2E: `e2e/tests/**/*.spec.ts` (Playwright)
+
+## 주요 빌드 명령
+
+```bash
+# 빌드 및 배포
+make deploy
+
+# 코드 스타일 체크 및 자동 수정
+make check-style-fix
+
+# 테스트
+make test
+
+# E2E 테스트
+make e2e
+
+# 프롬프트 평가 (CI 모드)
+make evals-ci
+
+# 스트리밍 벤치마크
+go test -bench=. -benchmem ./llm/... ./streaming/...
+```
+
+## 환경 변수
+
+| 변수 | 설명 |
+|------|------|
+| `MM_SERVICESETTINGS_SITEURL` | Mattermost 서버 URL |
+| `MM_ADMIN_USERNAME` | 관리자 사용자명 |
+| `MM_ADMIN_PASSWORD` | 관리자 비밀번호 |
+| `LLM_PROVIDER` | 평가용 LLM 제공자 (openai, anthropic, azure 등) |
+
+## 주요 참고 문서
+
+| 문서 | 설명 |
+|------|------|
+| `spec-docs/architecture.md` | 아키텍처 상세 |
+| `spec-docs/plan.md` | 개발 가이드 및 API 명세 |
+| `docs/admin_guide.md` | 관리자 설치/설정 가이드 |
+| `docs/user_guide.md` | 사용자 가이드 |
+| `docs/providers.md` | LLM 제공자 설정 |
+
+## 도메인별 규칙 파일
+
+| 도메인 | 파일 |
+|--------|------|
+| LLM 통합 | `.cursor/rules/features/llm/_index.mdc` |
+| MCP | `.cursor/rules/features/mcp/_index.mdc` |
+| 대화 | `.cursor/rules/features/conversations/_index.mdc` |
+| 스트리밍 | `.cursor/rules/features/streaming/_index.mdc` |
+| 검색 | `.cursor/rules/features/search/_index.mdc` |
+| 봇 | `.cursor/rules/features/bots/_index.mdc` |
+| API | `.cursor/rules/features/api/_index.mdc` |
+| 테스트 | `.cursor/rules/features/testing/_index.mdc` |
+| 트러블슈팅 | `.cursor/rules/features/troubleshooting/_index.mdc` |

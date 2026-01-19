@@ -1,0 +1,268 @@
+---
+description: Go 서버 코드 규칙
+globs: ["**/*.go"]
+---
+
+# Go 서버 코드 규칙
+
+## 아키텍처 레이어
+
+```
+Plugin (server/plugin.go)
+    → API Handler (api/api.go)
+        → Service Layer (conversations/, bots/, etc.)
+            → LLM Layer (llm/, anthropic/, openai/, bedrock/)
+                → External LLM APIs
+```
+
+### 각 레이어 역할
+
+| 레이어 | 위치 | 역할 |
+|--------|------|------|
+| Plugin | `server/plugin.go` | Mattermost 플러그인 인터페이스, 라이프사이클 |
+| API | `api/` | HTTP 요청/응답, 인증, 라우팅 (**Gin 프레임워크** 사용) |
+| Conversations | `conversations/` | 대화 처리, 메시지 핸들링 |
+| Bots | `bots/` | 봇 관리, LLM 래퍼, 권한 |
+| LLM | `llm/`, `anthropic/`, `openai/`, `bedrock/` | LLM 공급자 통합 |
+| MCP | `mcp/`, `mcpserver/` | MCP 클라이언트/서버 |
+| Search | `search/`, `embeddings/`, `indexer/` | 시맨틱 검색 |
+| Streaming | `streaming/` | 응답 스트리밍 |
+
+### 서비스 구조
+
+| 서비스 | 위치 | 역할 |
+|--------|------|------|
+| Conversations | `conversations/` | 대화 세션 관리 |
+| MMBots | `bots/` | Mattermost 봇 생성/관리 |
+| Streaming | `streaming/` | LLM 응답 스트리밍 |
+| Search | `search/` | 시맨틱 검색 |
+| Indexer | `indexer/` | 콘텐츠 인덱싱 |
+| MCP Client | `mcp/` | 외부 MCP 서버 연결 |
+| MCP Server | `mcpserver/` | 내장 MCP 서버 |
+| Metrics | `metrics/` | Prometheus 메트릭 |
+
+## 플러그인 초기화 흐름
+
+```
+OnActivate
+    ├── Create PluginAPI Client
+    ├── Initialize License Checker
+    ├── Run Database Migrations
+    ├── Initialize Token Logger
+    ├── Initialize MMBots Service
+    │       └── EnsureBots() → Create/Update Mattermost Bots
+    ├── Setup Database Tables
+    ├── Initialize Prompts Manager (Load .tmpl files)
+    ├── Initialize Streaming Service
+    ├── Initialize Search Infrastructure
+    ├── Initialize Indexer Service
+    ├── Initialize MCP Client Manager
+    ├── Initialize Context Builder
+    ├── Initialize Conversations Service
+    ├── Initialize Meetings Service
+    └── Initialize API Service
+            └── Register HTTP Routes
+```
+
+## 코딩 패턴
+
+### LLM 공급자 추가
+
+새 LLM 공급자 추가 시:
+
+1. `{provider}/` 디렉토리 생성
+2. `llm.LanguageModel` 인터페이스 구현
+3. `bots/bots.go`의 `getLLM()` 함수에 등록
+
+```go
+// LLM 인터페이스 구현 예시
+type MyProvider struct {
+    client *http.Client
+    // ...
+}
+
+func (p *MyProvider) ChatCompletion(conversation llm.CompletionRequest, opts ...llm.LanguageModelOption) (*llm.TextStreamResult, error) {
+    // 구현
+}
+
+func (p *MyProvider) ChatCompletionNoStream(conversation llm.CompletionRequest, opts ...llm.LanguageModelOption) (string, error) {
+    // 구현
+}
+
+func (p *MyProvider) CountTokens(text string) int {
+    // 구현
+}
+
+func (p *MyProvider) InputTokenLimit() int {
+    // 구현
+}
+```
+
+### HTTP 핸들러 작성 (Gin)
+
+```go
+// API 핸들러 예시 (api/{feature}.go) - Gin 프레임워크 사용
+func (a *API) handleMyFeature(c *gin.Context) {
+    userID := c.GetHeader("Mattermost-User-Id")
+    bot := c.MustGet(ContextBotKey).(*bots.Bot)
+    
+    // 요청 바디 파싱
+    var req RequestBody
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.AbortWithError(http.StatusBadRequest, err)
+        return
+    }
+    
+    // 비즈니스 로직
+    result, err := a.conversationsService.DoSomething(req)
+    if err != nil {
+        a.pluginAPI.Log.Error("Error in DoSomething", "error", err.Error())
+        c.AbortWithError(http.StatusInternalServerError, err)
+        return
+    }
+    
+    c.JSON(http.StatusOK, result)
+}
+```
+
+### 에러 처리
+
+```go
+// 표준 에러 패턴
+if err != nil {
+    return fmt.Errorf("context: %w", err)
+}
+
+// HTTP 에러 응답
+http.Error(w, "error message", http.StatusBadRequest)
+```
+
+### 로깅
+
+```go
+// pluginAPI.LogError/LogWarn/LogInfo/LogDebug 사용
+a.pluginAPI.LogError("Error occurred", "error", err.Error(), "userID", userID)
+a.pluginAPI.LogDebug("Debug info", "key", "value")
+```
+
+## LLM 추상화 계층 (`llm/`)
+
+### 핵심 인터페이스 (`llm/language_model.go`)
+
+| 인터페이스 | 역할 |
+|-----------|------|
+| `LanguageModel` | LLM 공급자 추상화 |
+| `CompletionRequest` | 대화 컨텍스트 |
+| `TextStreamResult` | 스트리밍 응답 |
+
+```go
+type LanguageModel interface {
+    ChatCompletion(conversation CompletionRequest, opts ...LanguageModelOption) (*TextStreamResult, error)
+    ChatCompletionNoStream(conversation CompletionRequest, opts ...LanguageModelOption) (string, error)
+    CountTokens(text string) int
+    InputTokenLimit() int
+}
+```
+
+### 지원 공급자
+
+| 공급자 | 디렉토리 | 설명 |
+|--------|----------|------|
+| OpenAI | `openai/` | GPT 시리즈 |
+| Anthropic | `anthropic/` | Claude 시리즈 |
+| AWS Bedrock | `bedrock/` | Converse API |
+| Cohere | `openai/` (호환) | Command 시리즈 |
+| Mistral | `openai/` (호환) | Mistral 시리즈 |
+| ASage | `asage/` | 실험적 (스트리밍 미지원) |
+
+## MCP 시스템
+
+### MCP 클라이언트 (`mcp/`)
+
+```go
+// 외부 MCP 서버 연결
+type ClientManager struct {
+    clients   map[string]*UserClients
+    oauthManager *OAuthManager
+}
+```
+
+### MCP 서버 (`mcpserver/`)
+
+```go
+// 내장 MCP 서버 도구 추가
+func (s *Server) registerTools() {
+    s.AddTool("tool_name", toolHandler)
+}
+```
+
+## 프롬프트 관리
+
+### 디렉토리 구조
+
+| 위치 | 설명 |
+|------|------|
+| `prompts/*.tmpl` | 프롬프트 템플릿 파일 (Go template 형식) |
+| `prompts/prompts.go` | embed.FS로 템플릿 임베딩 |
+| `llm/prompts.go` | Prompts 구조체 및 템플릿 파싱/실행 |
+
+### 프롬프트 사용 예시
+
+```go
+// llm.Prompts 구조체 사용
+prompts, err := llm.NewPrompts(prompts.PromptsFolder)
+if err != nil {
+    return err
+}
+
+// 템플릿 실행
+result, err := prompts.Format("summarize_thread_system", context)
+```
+
+### 주요 프롬프트 템플릿
+
+| 템플릿 | 용도 |
+|--------|------|
+| `summarize_thread_system.tmpl` | 스레드 요약 |
+| `summarize_channel_*.tmpl` | 채널 요약 |
+| `find_action_items_*.tmpl` | 액션 아이템 추출 |
+| `search_*.tmpl` | 검색 관련 |
+| `meeting_summary_*.tmpl` | 회의 요약 |
+| `emoji_select_system.tmpl` | 이모지 반응 |
+| `standard_personality.tmpl` | 기본 성격 |
+
+## 데이터베이스
+
+### 테이블
+
+| 테이블 | 용도 |
+|--------|------|
+| `LLM_PostMeta` | 포스트 메타데이터 |
+| `llm_posts_embeddings` | 임베딩 벡터 (pgvector) |
+
+### 마이그레이션
+
+- 위치: `database/schema.go`
+- 플러그인 활성화 시 자동 실행
+
+## 테스트
+
+```bash
+# 전체 테스트
+make test
+
+# 특정 패키지 테스트
+go test -v ./conversations/...
+
+# 특정 테스트
+go test -v ./api/... -run TestSomething
+
+# 벤치마크
+go test -bench=. -benchmem ./streaming/...
+```
+
+### 테스트 규칙
+
+- 테이블 드리븐 테스트 사용
+- mocking 라이브러리 금지
+- 실제 구현 테스트 선호

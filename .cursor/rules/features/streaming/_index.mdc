@@ -1,0 +1,277 @@
+---
+description: 스트리밍 처리 관련 규칙
+globs: ["streaming/**/*.go"]
+---
+
+# 스트리밍 (Streaming) 도메인
+
+## 개요
+
+스트리밍 서비스는 LLM의 실시간 응답을 Mattermost 포스트로 전달합니다.
+WebSocket을 통해 사용자에게 즉시 응답을 표시합니다.
+
+## 아키텍처
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      Streaming Service                           │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │    Stream    │  │   Post       │  │   WebSocket          │  │
+│  │    Reader    │  │  Modifier    │  │   Publisher          │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘  │
+│         │                 │                      │              │
+│         └─────────────────┼──────────────────────┘              │
+│                           │                                      │
+│                           ▼                                      │
+│                    ┌──────────────┐                              │
+│                    │  Mattermost  │                              │
+│                    │   Server     │                              │
+│                    └──────────────┘                              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 핵심 구조체
+
+### Service Interface (`streaming/streaming.go`)
+
+```go
+type Service interface {
+    StreamToNewPost(ctx context.Context, botID string, requesterUserID string, stream *llm.TextStreamResult, post *model.Post, respondingToPostID string) error
+    StreamToNewDM(ctx context.Context, botID string, stream *llm.TextStreamResult, userID string, post *model.Post, respondingToPostID string) error
+    StreamToPost(ctx context.Context, stream *llm.TextStreamResult, post *model.Post, userLocale string)
+    StopStreaming(postID string)
+    GetStreamingContext(inCtx context.Context, postID string) (context.Context, error)
+    FinishStreaming(postID string)
+}
+```
+
+### MMPostStreamService (`streaming/streaming.go`)
+
+```go
+type MMPostStreamService struct {
+    contexts      map[string]postStreamContext
+    contextsMutex sync.Mutex
+    mmClient      Client
+    i18n          *i18n.Bundle
+}
+
+func NewMMPostStreamService(mmClient Client, i18n *i18n.Bundle) *MMPostStreamService
+```
+
+### Client Interface
+
+스트리밍 서비스가 필요로 하는 최소 클라이언트 인터페이스:
+
+```go
+type Client interface {
+    PublishWebSocketEvent(event string, payload map[string]interface{}, broadcast *model.WebsocketBroadcast)
+    UpdatePost(post *model.Post) error
+    CreatePost(post *model.Post) error
+    DM(senderID, receiverID string, post *model.Post) error
+    GetUser(userID string) (*model.User, error)
+    GetChannel(channelID string) (*model.Channel, error)
+    GetConfig() *model.Config
+    LogError(msg string, keyValuePairs ...interface{})
+    LogDebug(msg string, keyValuePairs ...interface{})
+}
+```
+
+## 스트리밍 흐름
+
+```
+1. LLM 스트림 수신 시작
+   │
+   ├── 2. 초기 포스트 생성/업데이트
+   │
+   ├── 3. 이벤트별 처리
+   │   │
+   │   ├── EventTypeText: 텍스트 누적
+   │   │
+   │   ├── EventTypeReasoning: 추론 요약 처리
+   │   │
+   │   ├── EventTypeToolCalls: 도구 호출 플래그 설정
+   │   │
+   │   ├── EventTypeAnnotations: 인용/주석 처리
+   │   │
+   │   └── WebSocket 이벤트 발행 (실시간 업데이트)
+   │
+   └── 4. 완료 시
+       │
+       ├── 최종 포스트 업데이트
+       │
+       └── 토큰 사용량 로깅
+```
+
+## 포스트 속성 (Props)
+
+### 상수 (`streaming/post_modifier.go`, `streaming/streaming.go`)
+
+```go
+const LLMRequesterUserID = "llm_requester_user_id"
+const RespondingToProp = "responding_to"
+const NoRegen = "no_regen"
+const UnsafeLinksPostProp = "unsafe_links"
+
+const PostStreamingControlCancel = "cancel"
+const PostStreamingControlEnd = "end"
+const PostStreamingControlStart = "start"
+
+const ToolCallProp = "pending_tool_call"
+const ReasoningSummaryProp = "reasoning_summary"
+const ReasoningSignatureProp = "reasoning_signature"
+const AnnotationsProp = "annotations"
+```
+
+### ModifyPostForBot (`streaming/post_modifier.go`)
+
+```go
+func ModifyPostForBot(botid string, requesterUserID string, post *model.Post, respondingToPostID string) {
+    post.UserId = botid
+    post.Type = "custom_llmbot"
+    post.AddProp(LLMRequesterUserID, requesterUserID)
+    post.AddProp(UnsafeLinksPostProp, "true")
+    
+    if respondingToPostID != "" {
+        post.AddProp(RespondingToProp, respondingToPostID)
+    }
+}
+```
+
+## WebSocket 이벤트
+
+### 이벤트 타입
+
+| 이벤트 | 설명 |
+|--------|------|
+| `custom_mattermost-ai_stream_chunk` | 스트리밍 청크 |
+| `custom_mattermost-ai_stream_end` | 스트리밍 완료 |
+| `custom_mattermost-ai_stream_error` | 스트리밍 에러 |
+
+### 이벤트 발행
+
+```go
+func (p *MMPostStreamService) publishWSEvent(postID string, content string) {
+    p.mmClient.PublishWebSocketEvent(
+        "stream_chunk",
+        map[string]interface{}{
+            "post_id": postID,
+            "content": content,
+        },
+        &model.WebsocketBroadcast{
+            ChannelId: channelID,
+        },
+    )
+}
+```
+
+## 주요 메서드
+
+### StreamToNewPost
+
+새 포스트를 생성하고 스트리밍 응답을 전달:
+
+```go
+func (p *MMPostStreamService) StreamToNewPost(ctx context.Context, botID string, requesterUserID string, stream *llm.TextStreamResult, post *model.Post, respondingToPostID string) error {
+    // 1. ModifyPostForBot으로 포스트 속성 설정
+    ModifyPostForBot(botID, requesterUserID, post, respondingToPostID)
+    
+    // 2. 포스트 생성
+    if err := p.mmClient.CreatePost(post); err != nil {
+        return err
+    }
+    
+    // 3. 스트리밍 컨텍스트 생성
+    ctx, err := p.GetStreamingContext(context.Background(), post.Id)
+    
+    // 4. 스트림 처리
+    p.StreamToPost(ctx, stream, post, userLocale)
+    
+    return nil
+}
+```
+
+### StreamToPost
+
+기존 포스트에 스트리밍 응답 전달:
+
+```go
+func (p *MMPostStreamService) StreamToPost(ctx context.Context, stream *llm.TextStreamResult, post *model.Post, userLocale string) {
+    // 스트림 이벤트 처리 루프
+    for event := range stream.Stream {
+        switch event.Type {
+        case llm.EventTypeText:
+            // 텍스트 누적 및 WebSocket 발행
+        case llm.EventTypeEnd:
+            // 스트리밍 완료 처리
+        case llm.EventTypeError:
+            // 에러 처리
+        case llm.EventTypeToolCalls:
+            // 도구 호출 플래그 설정
+        case llm.EventTypeReasoning:
+            // 추론 요약 처리
+        case llm.EventTypeAnnotations:
+            // 인용/주석 처리
+        }
+    }
+}
+```
+
+## 벤치마크
+
+스트리밍 성능 테스트:
+
+```bash
+# 전체 스트리밍 벤치마크
+go test -bench=. -benchmem ./streaming/...
+
+# 스트림 읽기 벤치마크
+go test -bench=. -benchmem ./llm/...
+```
+
+### 벤치마크 파일
+
+| 파일 | 측정 대상 |
+|------|----------|
+| `streaming/streaming_bench_test.go` | 스트리밍 서비스 성능 |
+| `streaming/benchmark_client_test.go` | 클라이언트 모킹 |
+| `llm/stream_bench_test.go` | 스트림 읽기 성능 |
+
+## 에러 처리
+
+```go
+func (p *MMPostStreamService) StreamToPost(ctx context.Context, stream *llm.TextStreamResult, post *model.Post, userLocale string) {
+    for event := range stream.Stream {
+        switch event.Type {
+        case llm.EventTypeError:
+            err := event.Value.(error)
+            p.mmClient.LogError("Streaming error", "error", err.Error())
+            // 에러 메시지 포스트에 추가
+            post.Message = "⚠️ Error: " + err.Error()
+            p.mmClient.UpdatePost(post)
+            return
+        }
+    }
+}
+```
+
+## 관련 파일
+
+| 파일 | 설명 |
+|------|------|
+| `streaming/streaming.go` | 메인 스트리밍 서비스 |
+| `streaming/post_modifier.go` | 포스트 속성 수정 유틸리티 |
+| `streaming/streaming_bench_test.go` | 스트리밍 벤치마크 |
+| `streaming/benchmark_client_test.go` | 벤치마크용 클라이언트 |
+| `llm/stream.go` | LLM 스트림 유틸리티 |
+| `llm/stream_bench_test.go` | 스트림 벤치마크 |
+
+---
+
+## Q&A 목록
+
+> 개발 중 생긴 질문들이 `q-{주제}.mdc` 파일로 이 폴더에 추가됩니다.
+
+| 질문 | 파일 |
+|------|------|
+| (예시) 스트리밍 업데이트 주기는 어떻게 조절하나? | `q-update-interval.mdc` |
