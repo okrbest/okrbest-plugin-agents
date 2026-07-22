@@ -3,6 +3,7 @@
 
 import {PlusIcon} from '@mattermost/compass-icons/components';
 import React from 'react';
+import {FormattedMessage} from 'react-intl';
 import styled from 'styled-components';
 
 import {PrimaryButton} from 'src/components/assets/buttons';
@@ -18,11 +19,24 @@ const NoServicesPage = (props: Props) => {
     return (
         <StyledPanelContainer>
             <SparklesGraphic/>
-            <Title>{'No AI services added yet'}</Title>
-            <Subtitle>{'To get started with Agents, add an AI service'}</Subtitle>
+            <Title>
+                <FormattedMessage
+                    id='admin_console.no_services_page.title'
+                    defaultMessage='No AI services added yet'
+                />
+            </Title>
+            <Subtitle>
+                <FormattedMessage
+                    id='admin_console.no_services_page.subtitle'
+                    defaultMessage='To get started with Agents, add an AI service'
+                />
+            </Subtitle>
             <PrimaryButton onClick={props.onAddServicePressed}>
                 <StyledPlusIcon/>
-                {'Add an AI Service'}
+                <FormattedMessage
+                    id='admin_console.no_services_page.add_button'
+                    defaultMessage='Add an AI Service'
+                />
             </PrimaryButton>
         </StyledPanelContainer>
     );
