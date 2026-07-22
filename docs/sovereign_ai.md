@@ -46,7 +46,7 @@ The Mattermost Agents plugin serves as the foundation for Sovereign AI implement
 - Respects existing permission structures
 
 #### Data Integration Framework
-- Integration with external tools through built-in connectors (GitHub, Jira)
+- Integration with external tools through MCP servers and other configured integrations
 - MCP server support for custom integrations
 - Tool approval system for security
 
@@ -82,7 +82,7 @@ For organizations requiring complete data sovereignty, the Agents plugin support
 
 ### Hybrid Cloud Infrastructure Deployment
 
-Organizations can leverage cloud infrastructure while maintaining control by deploying on platforms like AWS Bedrock, Azure OpenAI Service, or Oracle Cloud Infrastructure. These deployments can use managed LLM services while maintaining private network connectivity, custom compute instances for self-hosted models, and integration with existing cloud identity and access management systems.
+Organizations can leverage cloud infrastructure while maintaining control by deploying on platforms like AWS Bedrock, Azure OpenAI Service, or Oracle Cloud Infrastructure. These deployments can use managed LLM services while maintaining private network connectivity, custom compute instances for self-hosted models, and integration with existing cloud identity and access management systems. Admins can configure service-level fallback chains, such as cloud to regional or on-premises to local OpenAI-compatible models, so each request starts with the primary service and automatically fails over only when earlier services are unavailable.
 
 ### Public LLM Integration with Data Controls
 

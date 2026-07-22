@@ -2,11 +2,13 @@
 
 A Model Context Protocol (MCP) server that provides AI agents and automation tools with secure access to Mattermost channels, users, and content.
 
+**Standalone binary:** The `mattermost-mcp-server` process (for example, stdio transport for local clients) is intended for **development and local tooling only** and is **not** supported for production deployments. For production, use the Agents plugin’s embedded MCP and the in-server integration described in the [admin guide](../docs/admin_guide.md#mattermost-mcp-server).
+
 ## Features
 
 - **MCP Protocol Support**: Implements the Model Context Protocol for standardized AI agent communication
 - **Authentication**: Personal Access Token (PAT) authentication
-- **Transport**: Configurable transport layer (stdio JSON-RPC for desktop clients, HTTP with SSE for web applications)
+- **Transport** (development use): Configurable transport layer (stdio JSON-RPC for desktop clients, HTTP with SSE for web applications). The standalone binary note at the top of this file also applies. For production, use the Agents plugin’s embedded MCP and the [admin guide](../docs/admin_guide.md#mattermost-mcp-server).
 - **Comprehensive Mattermost Integration**: Read posts, channels, search, create content
 - **Dual Mode Operation**: Runs standalone or embedded in the AI plugin
 
@@ -96,6 +98,20 @@ Get all members of a specific team with their details.
 **Parameters:**
 - `team_id` (required): ID of the team to get members for
 
+### `add_channel_member`
+Add a user to a channel.
+
+**Parameters:**
+- `user_id` (required), `channel_id` (required)
+
+### `add_team_member`
+Add a user to a team.
+
+**Parameters:**
+- `user_id` (required), `team_id` (required)
+
+> **Additional tools:** The Agents plugin registers a large catalog of additional read and write tools spanning posts, reactions, threads, channels, members, bookmarks, users, status, teams, files, integrations, groups, and roles. Agents discover them on demand via the `search_tools` and `load_tool` meta-tools rather than carrying every schema in context.
+
 ### Development Tools (Dev Mode Only)
 
 The following tools are only available when the `-dev` flag is enabled:
@@ -111,14 +127,6 @@ Create a new team.
 - **Parameters:** `name`, `display_name`, `type` (O for open, I for invite only), `description` (optional), `team_icon` (optional): File path or URL to set as team icon (supports .jpeg, .jpg, .png, .gif)
   - **Note**: File paths only work with Claude Code; Claude Desktop cannot access local files
   - **File Path Format**: Use relative paths like `team-logo.png` (files are accessed from the `mcpserver/data/` directory)
-
-#### `add_user_to_team`
-Add a user to a team.
-- **Parameters:** `user_id`, `team_id`
-
-#### `add_user_to_channel`
-Add a user to a channel.
-- **Parameters:** `user_id`, `channel_id`
 
 #### `create_post_as_user`
 Create a post as a specific user using username/password login. Simply provide the username and password of created users.
@@ -163,7 +171,7 @@ Create a post as a specific user using username/password login. Simply provide t
 - `--dev`: Enable development mode with additional tools for setting up test data
 - `--version`: Show version information
 
-**HTTP Transport Options (when --transport=http):**
+**HTTP Transport Options** (when `--transport=http` — development and local use only, not for production; see the intro):
 - `--http-port`: Port for HTTP server (default: 8080)
 - `--http-bind-addr`: Bind address for HTTP server (default: 127.0.0.1 for security, use specific IP for external access)
 - `--site-url`: Public URL where clients will access the MCP server (used for OAuth metadata and origin validation)
@@ -179,7 +187,7 @@ Create a post as a specific user using username/password login. Simply provide t
 #### Claude Code Integration
 
 ```bash
-claude mcp add mattermost -e MM_SERVER_URL=https://mattermost-url MM_ACCESS_TOKEN=<token> -- /path/to/mattermost-plugin-ai/mcpserver/bin/mattermost-mcp-server --dev --debug
+claude mcp add mattermost -e MM_SERVER_URL=https://mattermost-url MM_ACCESS_TOKEN=<token> -- /path/to/mattermost-plugin-agents/mcpserver/bin/mattermost-mcp-server --dev --debug
 ```
 
 #### Claude Desktop Integration
@@ -194,7 +202,7 @@ To use with Claude Desktop, add the server to your MCP configuration:
 {
   "mcpServers": {
     "mattermost": {
-      "command": "/path/to/mattermost-plugin-ai/mcpserver/bin/mattermost-mcp-server",
+      "command": "/path/to/mattermost-plugin-agents/mcpserver/bin/mattermost-mcp-server",
       "args": ["--debug"],
       "env": {
         "MM_SERVER_URL": "https://your-mattermost.com",
@@ -205,13 +213,13 @@ To use with Claude Desktop, add the server to your MCP configuration:
 }
 ```
 
-#### HTTP Transport Integration
+#### HTTP Transport Integration (development and local use)
 
-For HTTP-based MCP clients and web applications, the server supports HTTP transport with OAuth authentication:
+For HTTP-based MCP clients and web applications, the server supports HTTP transport with OAuth authentication. The standalone binary is for development; for production, use the Agents plugin’s embedded MCP and the [admin guide](../docs/admin_guide.md#mattermost-mcp-server) integration.
 
 **Basic HTTP server setup:**
 ```bash
-./bin/mattermost-mcp-server \
+./mcpserver/bin/mattermost-mcp-server \
   --transport http \
   --server-url https://your-mattermost.com \
   --http-port 8080 \
@@ -221,7 +229,7 @@ For HTTP-based MCP clients and web applications, the server supports HTTP transp
 **External access via specific network interface:**
 ```bash
 # Bind to specific network interface IP
-./bin/mattermost-mcp-server \
+./mcpserver/bin/mattermost-mcp-server \
   --transport http \
   --server-url https://your-mattermost.com \
   --http-bind-addr 192.168.1.100 \
@@ -233,7 +241,7 @@ For HTTP-based MCP clients and web applications, the server supports HTTP transp
 ```bash
 export MM_SERVER_URL=https://your-mattermost.com
 export MM_INTERNAL_SERVER_URL=http://localhost:8065  # optional for localhost optimization
-./bin/mattermost-mcp-server --transport http --http-port 8080 --site-url https://mcp.yourcompany.com
+./mcpserver/bin/mattermost-mcp-server --transport http --http-port 8080 --site-url https://mcp.yourcompany.com
 ```
 
 **Available endpoints:**
@@ -262,7 +270,7 @@ The STDIO MCP server supports file attachments and uploads for various tools. Fi
 All local file operations use the `mcpserver/data/` directory within your project:
 
 ```
-mattermost-plugin-ai/
+mattermost-plugin-agents/
 ├── mcpserver/
 │   ├── bin/
 │   │   └── mattermost-mcp-server  # MCP server binary
@@ -293,7 +301,7 @@ When the MCP server runs on the same machine as your Mattermost server, you can 
 
 ```bash
 # MCP server and Mattermost on the same machine
-./bin/mattermost-mcp-server \
+./mcpserver/bin/mattermost-mcp-server \
   --server-url https://mattermost.company.com \
   --internal-server-url http://localhost:8065 \
   --token your-pat-token
@@ -304,7 +312,7 @@ When the MCP server runs on the same machine as your Mattermost server, you can 
 export MM_SERVER_URL=https://mattermost.company.com
 export MM_INTERNAL_SERVER_URL=http://localhost:8065
 export MM_ACCESS_TOKEN=your-pat-token
-./bin/mattermost-mcp-server
+./mcpserver/bin/mattermost-mcp-server
 ```
 
 **When to use:**

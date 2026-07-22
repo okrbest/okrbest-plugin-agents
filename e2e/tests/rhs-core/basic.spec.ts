@@ -4,6 +4,7 @@ import RunContainer from 'helpers/plugincontainer';
 import MattermostContainer from 'helpers/mmcontainer';
 import { MattermostPage } from 'helpers/mm';
 import { AIPlugin } from 'helpers/ai-plugin';
+import { resetSelectedAgentPreference } from 'helpers/agent_preferences';
 import { OpenAIMockContainer, RunOpenAIMocks, responseTest, responseTest2, responseTest2Text, responseTestText } from 'helpers/openai-mock';
 
 // Test configuration
@@ -23,6 +24,11 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await openAIMock.stop();
   await mattermost.stop();
+});
+
+// Agent selection persists server-side; reset so mock-bot tests stay isolated.
+test.beforeEach(async () => {
+  await resetSelectedAgentPreference(mattermost, username, password);
 });
 
 // Common test setup
@@ -81,21 +87,6 @@ test.describe('RHS Bot Interactions', () => {
     await aiPlugin.sendMessage('Hello!');
     await expect(page.getByRole('button', { name: 'second', exact: true })).toBeVisible();
     await aiPlugin.waitForBotResponse(responseTestText);
-  });
-});
-
-test.describe('Prompt Templates', () => {
-  test('prompt templates replace text in textarea', async ({ page }) => {
-    const { aiPlugin } = await setupTestPage(page);
-    await aiPlugin.openRHS();
-
-    // Clicking prompt template adds message
-    await aiPlugin.usePromptTemplate('brainstorm');
-    await aiPlugin.expectTextInTextarea('Brainstorm ideas about ');
-
-    // Clicking without editing replaces the text
-    await aiPlugin.usePromptTemplate('todo');
-    await aiPlugin.expectTextInTextarea('Write a todo list about ');
   });
 });
 

@@ -10,10 +10,10 @@ import {useIsBasicsLicensed} from '@/license';
 import {Pill} from '../../pill';
 import EnterpriseChip from '../enterprise_chip';
 import Panel from '../panel';
-import {ItemList, SelectionItem, SelectionItemOption} from '../item';
+import {BooleanItem, ItemList, SelectionItem, SelectionItemOption} from '../item';
 import {IntItem} from '../number_items';
 
-import {EmbeddingSearchConfig} from './types';
+import {EmbeddingSearchConfig, REINDEX_DEFAULTS, REINDEX_INDEX_STRATEGY, ReindexIndexStrategy} from './types';
 import {OpenAIProviderConfig, OpenAICompatibleProviderConfig} from './provider_configs';
 import {ChunkingOptionsConfig} from './chunking_options';
 import {ReindexSection} from './reindex_section';
@@ -27,6 +27,24 @@ const Horizontal = styled.div`
     gap: 8px;
 `;
 
+// Mirror the server's normalization (GetReindexWorkers/GetReindexBatchSize):
+// unset or non-positive falls back to the default, oversized is clamped. This
+// keeps the form showing the value the server will actually use.
+const normalizeReindexValue = (value: number | undefined, fallback: number, max: number): number => {
+    if (typeof value !== 'number' || isNaN(value) || value <= 0) {
+        return fallback;
+    }
+    return Math.min(value, max);
+};
+
+// Mirror EffectiveReindexIndexStrategy: only 'defer' stays; else maintain.
+const normalizeReindexIndexStrategy = (value: string | undefined): ReindexIndexStrategy => {
+    if (value === REINDEX_INDEX_STRATEGY.defer) {
+        return REINDEX_INDEX_STRATEGY.defer;
+    }
+    return REINDEX_INDEX_STRATEGY.maintain;
+};
+
 interface Props {
     value: EmbeddingSearchConfig;
     onChange: (config: EmbeddingSearchConfig) => void;
@@ -35,16 +53,48 @@ interface Props {
 const EmbeddingSearchPanel = ({value, onChange}: Props) => {
     const intl = useIntl();
     const isBasicsLicensed = useIsBasicsLicensed();
+    const effectiveType = value.type || '';
+    const isEnabled = effectiveType !== '';
 
     const {
         jobStatus,
         statusMessage,
         showReindexConfirmation,
+        healthCheckResult,
+        healthCheckLoading,
+        modelCompatibility,
+        isJobStale,
         handleReindexClick,
         handleConfirmReindex,
         handleCancelReindex,
         handleCancelJob,
+        handleCatchUpClick,
+        handleHealthCheck,
+        handleResumeClick,
     } = useJobStatus();
+
+    // Check if current form values differ from stored (indexed) values
+    // This enables showing a warning immediately when editing, before save
+    const currentModelName = value.embeddingProvider.parameters?.embeddingModel as string | null;
+    const storedDimensions = modelCompatibility?.stored_dimensions ?? 0;
+    const storedModelName = modelCompatibility?.stored_model_name ?? '';
+
+    // Compute local mismatch and reason
+    let localMismatchReason = '';
+    if (modelCompatibility && storedDimensions > 0) {
+        if (value.dimensions !== storedDimensions) {
+            localMismatchReason = intl.formatMessage(
+                {defaultMessage: 'dimension mismatch: stored={stored}, current={current}'},
+                {stored: storedDimensions, current: value.dimensions},
+            );
+        } else if (currentModelName && currentModelName !== storedModelName) {
+            localMismatchReason = intl.formatMessage(
+                {defaultMessage: 'model changed: stored={stored}, current={current}'},
+                {stored: storedModelName, current: currentModelName},
+            );
+        }
+    }
+    const hasLocalModelMismatch = localMismatchReason !== '';
 
     if (!isBasicsLicensed) {
         return (
@@ -58,8 +108,8 @@ const EmbeddingSearchPanel = ({value, onChange}: Props) => {
                 subtitle={''}
             >
                 <EnterpriseChip
-                    text={intl.formatMessage({defaultMessage: 'Embeddings search is available on Enterprise plans'})}
-                    subtext={intl.formatMessage({defaultMessage: 'Embeddings search is available on Enterprise plans'})}
+                    text={intl.formatMessage({defaultMessage: 'Embedding search is available on qualifying Mattermost plans'})}
+                    subtext={intl.formatMessage({defaultMessage: 'Embedding search is available on qualifying Mattermost plans'})}
                 />
             </Panel>
         );
@@ -76,12 +126,27 @@ const EmbeddingSearchPanel = ({value, onChange}: Props) => {
             subtitle={intl.formatMessage({defaultMessage: 'Configure embedding search settings. Note: The current implementation is experimental and subject to breaking changes. This includes having to reindex all posts.'})}
         >
             <ItemList>
-                <SelectionItem
-                    label={intl.formatMessage({defaultMessage: 'Type'})}
-                    value={value.type}
-                    onChange={(e) => {
-                        const newType = e.target.value;
-                        if (newType === '') {
+                <BooleanItem
+                    label={intl.formatMessage({defaultMessage: 'Enable Embedding Search'})}
+                    value={isEnabled}
+                    onChange={(enabled) => {
+                        if (enabled) {
+                            onChange({
+                                type: 'composite',
+                                vectorStore: {type: 'pgvector', parameters: {}},
+                                embeddingProvider: {type: 'openai', parameters: {embeddingModel: '', apiKey: ''}},
+                                parameters: {},
+                                dimensions: 1536,
+                                chunkingOptions: {
+                                    chunkSize: 1000,
+                                    chunkOverlap: 200,
+                                    chunkingStrategy: 'sentences',
+                                },
+                                reindexWorkers: REINDEX_DEFAULTS.workers,
+                                reindexBatchSize: REINDEX_DEFAULTS.batchSize,
+                                reindexIndexStrategy: REINDEX_INDEX_STRATEGY.maintain,
+                            });
+                        } else {
                             onChange({
                                 type: '',
                                 vectorStore: {type: '', parameters: {}},
@@ -91,35 +156,15 @@ const EmbeddingSearchPanel = ({value, onChange}: Props) => {
                                 chunkingOptions: {
                                     chunkSize: 1000,
                                     chunkOverlap: 200,
-                                    minChunkSize: 0.75,
                                     chunkingStrategy: 'sentences',
                                 },
                             });
-                        } else if (value.type === '') {
-                            // Set defaults when enabling
-                            onChange({
-                                type: newType,
-                                vectorStore: {type: 'pgvector', parameters: {}},
-                                embeddingProvider: {type: 'openai', parameters: {embeddingModel: '', apiKey: ''}},
-                                parameters: {},
-                                dimensions: 0,
-                                chunkingOptions: {
-                                    chunkSize: 1000,
-                                    chunkOverlap: 200,
-                                    minChunkSize: 0.75,
-                                    chunkingStrategy: 'sentences',
-                                },
-                            });
-                        } else {
-                            onChange({...value, type: newType});
                         }
                     }}
-                >
-                    <SelectionItemOption value=''>{'Disabled'}</SelectionItemOption>
-                    <SelectionItemOption value='composite'>{'Composite'}</SelectionItemOption>
-                </SelectionItem>
+                    helpText={intl.formatMessage({defaultMessage: 'Enable or disable embedding-based semantic search.'})}
+                />
 
-                {value.type && value.type !== '' &&
+                {isEnabled &&
                 <SelectionItem
                     label={intl.formatMessage({defaultMessage: 'Vector Store Type'})}
                     value={value.vectorStore.type}
@@ -132,7 +177,7 @@ const EmbeddingSearchPanel = ({value, onChange}: Props) => {
                 </SelectionItem>
                 }
 
-                {value.type && value.type !== '' &&
+                {isEnabled &&
                 <SelectionItem
                     label={intl.formatMessage({defaultMessage: 'Embedding Provider Type'})}
                     value={value.embeddingProvider.type}
@@ -158,21 +203,21 @@ const EmbeddingSearchPanel = ({value, onChange}: Props) => {
                 </SelectionItem>
                 }
 
-                {value.type && value.type !== '' && value.embeddingProvider.type === 'openai' && (
+                {isEnabled && value.embeddingProvider.type === 'openai' && (
                     <OpenAIProviderConfig
                         value={value.embeddingProvider}
                         onChange={(config) => onChange({...value, embeddingProvider: config})}
                     />
                 )}
 
-                {value.type && value.type !== '' && value.embeddingProvider.type === 'openai-compatible' && (
+                {isEnabled && value.embeddingProvider.type === 'openai-compatible' && (
                     <OpenAICompatibleProviderConfig
                         value={value.embeddingProvider}
                         onChange={(config) => onChange({...value, embeddingProvider: config})}
                     />
                 )}
 
-                {value.type === 'composite' && (
+                {isEnabled && (
                     <>
                         <IntItem
                             label={intl.formatMessage({defaultMessage: 'Dimensions'})}
@@ -184,7 +229,7 @@ const EmbeddingSearchPanel = ({value, onChange}: Props) => {
                                     dimensions: dimensionsValue,
                                 });
                             }}
-                            min={0}
+                            min={1}
                             helptext={intl.formatMessage({defaultMessage: 'The number of dimensions for the vector embeddings. Common values are 768, 1024, or 1536 depending on the model.'})}
                         />
 
@@ -192,15 +237,57 @@ const EmbeddingSearchPanel = ({value, onChange}: Props) => {
                             value={value}
                             onChange={onChange}
                         />
+
+                        <IntItem
+                            label={intl.formatMessage({defaultMessage: 'Reindex Worker Count'})}
+                            placeholder={REINDEX_DEFAULTS.workers.toString()}
+                            value={normalizeReindexValue(value.reindexWorkers, REINDEX_DEFAULTS.workers, REINDEX_DEFAULTS.maxWorkers)}
+                            onChange={(reindexWorkers) => onChange({...value, reindexWorkers})}
+                            min={1}
+                            max={REINDEX_DEFAULTS.maxWorkers}
+                            helptext={intl.formatMessage({defaultMessage: 'Number of concurrent workers used during bulk reindexing. Higher values speed up reindexing but increase load on the embedding provider and database. Lower this if you hit provider rate limits frequently.'})}
+                        />
+
+                        <IntItem
+                            label={intl.formatMessage({defaultMessage: 'Reindex Batch Size'})}
+                            placeholder={REINDEX_DEFAULTS.batchSize.toString()}
+                            value={normalizeReindexValue(value.reindexBatchSize, REINDEX_DEFAULTS.batchSize, REINDEX_DEFAULTS.maxBatchSize)}
+                            onChange={(reindexBatchSize) => onChange({...value, reindexBatchSize})}
+                            min={1}
+                            max={REINDEX_DEFAULTS.maxBatchSize}
+                            helptext={intl.formatMessage({defaultMessage: 'Number of posts fetched and embedded per batch during bulk reindexing.'})}
+                        />
+
+                        <SelectionItem
+                            label={intl.formatMessage({defaultMessage: 'Reindex Index Strategy'})}
+                            value={normalizeReindexIndexStrategy(value.reindexIndexStrategy)}
+                            onChange={(e) => onChange({...value, reindexIndexStrategy: normalizeReindexIndexStrategy(e.target.value)})}
+                            helptext={intl.formatMessage({defaultMessage: 'Controls how the vector index is handled during a full reindex. Dropping and rebuilding the index after the bulk load is much faster for large databases, but semantic search is unavailable until the rebuild completes.'})}
+                        >
+                            <SelectionItemOption value={REINDEX_INDEX_STRATEGY.maintain}>
+                                {intl.formatMessage({defaultMessage: 'Maintain index during reindex (default)'})}
+                            </SelectionItemOption>
+                            <SelectionItemOption value={REINDEX_INDEX_STRATEGY.defer}>
+                                {intl.formatMessage({defaultMessage: 'Drop and rebuild index after reindex (faster for large databases)'})}
+                            </SelectionItemOption>
+                        </SelectionItem>
                     </>
                 )}
 
-                {value.type && value.type !== '' && (
+                {isEnabled && (
                     <ReindexSection
                         jobStatus={jobStatus}
                         statusMessage={statusMessage}
+                        healthCheckResult={healthCheckResult}
+                        healthCheckLoading={healthCheckLoading}
+                        hasLocalModelMismatch={hasLocalModelMismatch}
+                        localMismatchReason={localMismatchReason}
+                        isJobStale={isJobStale}
                         onReindexClick={handleReindexClick}
                         onCancelJob={handleCancelJob}
+                        onCatchUpClick={handleCatchUpClick}
+                        onHealthCheck={handleHealthCheck}
+                        onResumeClick={handleResumeClick}
                     />
                 )}
             </ItemList>
@@ -209,6 +296,7 @@ const EmbeddingSearchPanel = ({value, onChange}: Props) => {
                 show={showReindexConfirmation}
                 onConfirm={handleConfirmReindex}
                 onCancel={handleCancelReindex}
+                embeddingProviderType={value.embeddingProvider.type}
             />
         </Panel>
     );

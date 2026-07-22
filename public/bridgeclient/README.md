@@ -7,7 +7,7 @@ Go client library for Mattermost plugins and the server to interact with the AI 
 ### From a Plugin
 
 ```go
-import "github.com/mattermost/mattermost-plugin-ai/public/bridgeclient"
+import "github.com/mattermost/mattermost-plugin-agents/v2/public/bridgeclient"
 
 type MyPlugin struct {
     plugin.MattermostPlugin
@@ -34,7 +34,7 @@ func (p *MyPlugin) handleCommand() {
 ### From Mattermost Server
 
 ```go
-import "github.com/mattermost/mattermost-plugin-ai/public/bridgeclient"
+import "github.com/mattermost/mattermost-plugin-agents/v2/public/bridgeclient"
 
 type MyService struct {
     app       *app.App
@@ -70,10 +70,12 @@ response, err := client.AgentCompletion("bot-user-id", request)
 response, err := client.ServiceCompletion("openai", request)
 ```
 
+`allowed_tools` is supported only on agent endpoints. Service endpoints reject it.
+
 ### Streaming
 
 ```go
-import "github.com/mattermost/mattermost-plugin-ai/llm"
+import "github.com/mattermost/mattermost-plugin-agents/v2/llm"
 
 // Start streaming request (using Bot ID)
 result, err := client.AgentCompletionStream("bot-user-id", request)
@@ -107,6 +109,34 @@ request := bridgeclient.CompletionRequest{
 }
 ```
 
+### Agent tool allowlist
+
+Each entry in `allowed_tools` is a string tool name. The bridge accepts **both**
+the namespaced runtime name (`server__tool`, e.g. `mattermost__search_posts`) and
+the bare name (`search_posts`). `GetAgentTools` returns both forms per tool
+(`Name` is namespaced, `BareName` is bare). Bare names remain supported for backward compatibility.
+
+```go
+request := bridgeclient.CompletionRequest{
+    Posts: []bridgeclient.Post{
+        {Role: "user", Message: "Use the eligible MCP tool"},
+    },
+    AllowedTools: []string{"mattermost__search_posts", "read_channel"},
+    UserID:       userID, // Required when using AllowedTools
+}
+
+response, err := client.AgentCompletion("bot-user-id", request)
+```
+
+When `AllowedTools` is provided:
+- only tools in the list may run
+- tool execution is auto-run (no approval flow)
+- tools must come from enabled MCP servers or embedded MCP servers (built-in agent tools are not exposed for bridge allowlists)
+- empty lists and blank tool names are rejected by the bridge API
+- a bare name that exists on more than one MCP server is ambiguous and is
+  rejected; pass the namespaced name (`server__tool`) to target a specific
+  server's tool
+
 ## Permission Checking
 
 By default, the bridge does not check permissions. To enable permission checking, include `UserID` and optionally `ChannelID` in your request:
@@ -125,6 +155,25 @@ response, err := client.AgentCompletion("bot-user-id", request)
 ```
 
 If not using built-in permission checks, your plugin must verify permissions before making requests.
+
+## Token Usage Dimensions
+
+Bridge callers can optionally provide `Operation` and `OperationSubType` in `CompletionRequest` to customize token usage categorization in logs.
+
+If omitted, the bridge keeps current defaults:
+
+- `Operation`: `bridge_agent` or `bridge_service` (based on endpoint)
+- `OperationSubType`: `streaming` or `nostream` (based on request mode)
+
+```go
+request := bridgeclient.CompletionRequest{
+    Posts: []bridgeclient.Post{
+        {Role: "user", Message: "Summarize incident timeline"},
+    },
+    Operation:        "playbooks_summary",
+    OperationSubType: "incident_report",
+}
+```
 
 ## Agent vs Service
 
@@ -172,6 +221,35 @@ for _, service := range services {
         service.Name, service.ID, service.Type)
 }
 ```
+
+### Get Eligible Tools for an Agent
+
+```go
+// Get bridge-eligible tools for an agent
+tools, err := client.GetAgentTools("bot-user-id", "")
+if err != nil {
+    return err
+}
+
+for _, tool := range tools {
+    fmt.Printf("Tool: %s (bare: %s) - %s\n", tool.Name, tool.BareName, tool.Description)
+}
+```
+
+This endpoint returns only tools that are currently eligible for `AllowedTools`.
+Eligible tools come from enabled MCP servers and embedded MCP servers.
+If no eligible tools are available, this returns an empty list.
+
+Each entry exposes both `Name` (namespaced) and `BareName`. Either may be passed
+in `allowed_tools`; validate stored allowlists against either field.
+
+You can optionally pass `userID` to apply user-level permission filtering:
+
+```go
+tools, err := client.GetAgentTools("bot-user-id", userID)
+```
+
+If `userID` does not have access to the agent, the request fails with a permission error.
 
 ### Discovery with User Permissions
 

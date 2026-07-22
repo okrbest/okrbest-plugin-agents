@@ -21,24 +21,32 @@
 package llm
 
 import (
+	"context"
+
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
 type LanguageModel interface {
-	ChatCompletion(conversation CompletionRequest, opts ...LanguageModelOption) (*TextStreamResult, error)
-	ChatCompletionNoStream(conversation CompletionRequest, opts ...LanguageModelOption) (string, error)
+	ChatCompletion(ctx context.Context, conversation CompletionRequest, opts ...LanguageModelOption) (*TextStreamResult, error)
+	ChatCompletionNoStream(ctx context.Context, conversation CompletionRequest, opts ...LanguageModelOption) (string, error)
 
-	CountTokens(text string) int
+	// CountTokens returns the exact input-token count. Implementations that
+	// can't reach a provider counting endpoint return ErrUnsupportedTokenCount
+	// so callers can fall back to EstimateTokens.
+	CountTokens(ctx context.Context, request CompletionRequest, opts ...LanguageModelOption) (int, error)
+
 	InputTokenLimit() int
+	OutputTokenLimit() int
 }
 
 type LanguageModelConfig struct {
-	Model              string
-	MaxGeneratedTokens int
-	EnableVision       bool
-	JSONOutputFormat   *jsonschema.Schema
-	ToolsDisabled      bool
-	ReasoningDisabled  bool
+	Model                  string
+	MaxGeneratedTokens     int
+	EnableVision           bool
+	JSONOutputFormat       *jsonschema.Schema
+	ToolsDisabled          bool
+	NativeWebSearchAllowed bool // Allows native web search even when ToolsDisabled is true
+	ReasoningDisabled      bool
 }
 
 type LanguageModelOption func(*LanguageModelConfig)
@@ -63,6 +71,12 @@ func WithJSONOutput[T any]() LanguageModelOption {
 func WithToolsDisabled() LanguageModelOption {
 	return func(cfg *LanguageModelConfig) {
 		cfg.ToolsDisabled = true
+	}
+}
+
+func WithNativeWebSearchAllowed() LanguageModelOption {
+	return func(cfg *LanguageModelConfig) {
+		cfg.NativeWebSearchAllowed = true
 	}
 }
 

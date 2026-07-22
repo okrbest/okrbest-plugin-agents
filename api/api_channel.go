@@ -4,28 +4,32 @@
 package api
 
 import (
-	stdcontext "context"
 	"encoding/json"
-	"net/http"
-
 	"errors"
+	"fmt"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/render"
-	"github.com/mattermost/mattermost-plugin-ai/bots"
-	"github.com/mattermost/mattermost-plugin-ai/channels"
-	"github.com/mattermost/mattermost-plugin-ai/prompts"
-	"github.com/mattermost/mattermost-plugin-ai/streaming"
+	"github.com/mattermost/mattermost-plugin-agents/v2/bots"
+	"github.com/mattermost/mattermost-plugin-agents/v2/channels"
+	"github.com/mattermost/mattermost-plugin-agents/v2/llm"
+	"github.com/mattermost/mattermost-plugin-agents/v2/mcp"
+	"github.com/mattermost/mattermost-plugin-agents/v2/prompts"
+	"github.com/mattermost/mattermost-plugin-agents/v2/streaming"
+	"github.com/mattermost/mattermost-plugin-agents/v2/telemetry"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
 const (
-	TitleThreadSummary     = "Thread Summary"
-	TitleSummarizeUnreads  = "Summarize Unreads"
-	TitleSummarizeChannel  = "Summarize Channel"
-	TitleFindActionItems   = "Find Action Items"
-	TitleFindOpenQuestions = "Find Open Questions"
+	TitleSummarizeUnreads = "Summarize Unreads"
+	TitleSummarizeChannel = "Summarize Channel"
 )
+
+var channelAnalysisRequiredMCPTools = []llm.EnabledMCPTool{
+	{ServerOrigin: mcp.EmbeddedClientKey, ToolName: "read_channel"},
+	{ServerOrigin: mcp.EmbeddedClientKey, ToolName: "get_channel_info"},
+}
 
 func (a *API) channelAuthorizationRequired(c *gin.Context) {
 	channelID := c.Param("channelid")
@@ -50,16 +54,158 @@ func (a *API) channelAuthorizationRequired(c *gin.Context) {
 	}
 }
 
-func (a *API) handleInterval(c *gin.Context) {
-	userID := c.GetHeader("Mattermost-User-Id")
-	channel := c.MustGet(ContextChannelKey).(*model.Channel)
-	bot := c.MustGet(ContextBotKey).(*bots.Bot)
-
-	// Check license
+func (a *API) channelAnalysisLicenseRequired(c *gin.Context) {
 	if !a.licenseChecker.IsBasicsLicensed() {
 		c.AbortWithError(http.StatusForbidden, errors.New("feature not licensed"))
 		return
 	}
+}
+
+func (a *API) handleChannelAnalysis(c *gin.Context) {
+	userID := c.GetHeader("Mattermost-User-Id")
+	channel := c.MustGet(ContextChannelKey).(*model.Channel)
+	bot := c.MustGet(ContextBotKey).(*bots.Bot)
+	toolBot := channelAnalysisToolBot(bot)
+
+	var data struct {
+		AnalysisType string `json:"analysis_type" binding:"required"`
+		Since        string `json:"since"`
+		Until        string `json:"until"`
+		Days         int    `json:"days"`
+		Prompt       string `json:"prompt"`
+		TeamID       string `json:"team_id"`
+	}
+	if bindErr := c.ShouldBindJSON(&data); bindErr != nil {
+		c.AbortWithError(http.StatusBadRequest, bindErr)
+		return
+	}
+
+	const maxAnalysisDays = 14
+	if data.Days < 0 || data.Days > maxAnalysisDays {
+		c.AbortWithError(http.StatusBadRequest, fmt.Errorf("days must be between 0 and %d", maxAnalysisDays))
+		return
+	}
+
+	// Get the user to build context
+	user, err := a.pluginAPI.User.Get(userID)
+	if err != nil {
+		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("unable to get user: %w", err))
+		return
+	}
+
+	opts := []llm.ContextOption{
+		a.contextBuilder.WithLLMContextPreloadedMCPTools(channelAnalysisRequiredMCPTools),
+		a.contextBuilder.WithLLMContextDefaultTools(c.Request.Context(), toolBot),
+	}
+
+	// If the channel is a DM/GM and we have a team ID from the client, use it for context
+	if (channel.Type == model.ChannelTypeDirect || channel.Type == model.ChannelTypeGroup) && data.TeamID != "" {
+		team, teamErr := a.pluginAPI.Team.Get(data.TeamID)
+		if teamErr == nil && team != nil {
+			opts = append(opts, func(c *llm.Context) {
+				c.Team = team
+			})
+		}
+	}
+
+	// Build LLM context with default tools enabled
+	llmContext := a.contextBuilder.BuildLLMContextUserRequest(
+		bot,
+		user,
+		channel,
+		opts...,
+	)
+
+	// Validate that required tools are available for channel analysis.
+	availableTools, missingTools := channelAnalysisToolAvailability(llmContext.Tools)
+	if len(missingTools) > 0 {
+		a.pluginAPI.Log.Error("Channel analysis failed: required embedded MCP tools not available",
+			"userID", userID,
+			"channelID", channel.Id,
+			"dynamicToolLoading", llmContext.ToolCatalog.MCPDynamicToolLoading,
+			"missingTools", missingTools,
+			"availableTools", availableTools)
+		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("channel analysis requires embedded MCP tool(s) %v which are not available (dynamic loading: %t, found %d tools: %v) - ensure embedded MCP server is enabled, authorized, and working", missingTools, llmContext.ToolCatalog.MCPDynamicToolLoading, len(availableTools), availableTools))
+		return
+	}
+
+	// Create channels analyzer with conversation service
+	analyzer := channels.New(bot.LLM(), a.prompts, a.mmClient, a.dbClient, a.convService)
+
+	// Prepare analysis data for the prompt
+	analysisData := map[string]any{
+		"AnalysisType": data.AnalysisType,
+		"Since":        data.Since,
+		"Until":        data.Until,
+		"Days":         data.Days,
+		"Prompt":       data.Prompt,
+	}
+
+	result, err := analyzer.AnalyzeChannel(c.Request.Context(), llmContext, channel.Id, userID, bot.GetMMBot().UserId, analysisData)
+	if err != nil {
+		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("failed to analyze channel: %w", err))
+		return
+	}
+
+	// Create analysis post with conversation ID for streaming turn persistence
+	analysisPost := a.makeAnalysisPost(user.Locale, "", data.AnalysisType, result.ConversationID)
+
+	if err := a.streamingService.StreamToNewDM(telemetry.DetachContext(c.Request.Context()), bot.GetMMBot().UserId, result.Stream, user.Id, analysisPost, ""); err != nil {
+		c.AbortWithError(http.StatusInternalServerError, err)
+		return
+	}
+
+	// Update conversation with root post ID and title
+	if a.convService != nil {
+		if updateErr := a.convService.UpdateConversationRootPostID(result.ConversationID, analysisPost.Id); updateErr != nil {
+			a.pluginAPI.Log.Error("Failed to update conversation root post ID", "error", updateErr)
+		}
+		_ = a.convService.UpdateConversationTitle(result.ConversationID, TitleSummarizeChannel)
+	}
+
+	c.JSON(http.StatusOK, map[string]string{
+		"postid":    analysisPost.Id,
+		"channelid": analysisPost.ChannelId,
+	})
+}
+
+func channelAnalysisToolBot(bot *bots.Bot) *bots.Bot {
+	cfg := bot.GetConfig()
+	if cfg.AutoEnableNewMCPTools {
+		return bot
+	}
+
+	// Channel analysis immediately scopes the catalog to bound read-only tools,
+	// so load the MCP catalog even when the agent uses a narrower allowlist.
+	cfg.AutoEnableNewMCPTools = true
+	cfg.EnabledMCPTools = nil
+	return bots.NewBot(cfg, bot.GetService(), bot.GetMMBot(), bot.LLM())
+}
+
+func channelAnalysisToolAvailability(store *llm.ToolStore) ([]string, []string) {
+	var available []string
+	if store != nil {
+		for _, tool := range store.GetTools() {
+			available = append(available, tool.Name)
+		}
+	}
+
+	var missing []string
+	for _, required := range channelAnalysisRequiredMCPTools {
+		// Required channel-analysis MCP tools are preloaded into the visible
+		// store by WithLLMContextPreloadedMCPTools.
+		if _, ok := store.LookupTool(required.ToolName, required.ServerOrigin); !ok {
+			missing = append(missing, required.ToolName)
+		}
+	}
+
+	return available, missing
+}
+
+func (a *API) handleInterval(c *gin.Context) {
+	userID := c.GetHeader("Mattermost-User-Id")
+	channel := c.MustGet(ContextChannelKey).(*model.Channel)
+	bot := c.MustGet(ContextBotKey).(*bots.Bot)
 
 	// Parse request data
 	data := struct {
@@ -95,12 +241,12 @@ func (a *API) handleInterval(c *gin.Context) {
 		return
 	}
 
-	// Build LLM context
+	// Interval summaries disable tools, so skip MCP/tool initialization entirely.
 	context := a.contextBuilder.BuildLLMContextUserRequest(
 		bot,
 		user,
 		channel,
-		a.contextBuilder.WithLLMContextDefaultTools(bot),
+		a.contextBuilder.WithLLMContextNoTools(),
 	)
 
 	// Map preset prompt to prompt type and title
@@ -124,31 +270,41 @@ func (a *API) handleInterval(c *gin.Context) {
 		return
 	}
 
-	// Call channels interval processing
-	resultStream, err := channels.New(bot.LLM(), a.prompts, a.mmClient, a.dbClient).Interval(context, channel.Id, data.StartTime, data.EndTime, promptPreset)
+	// Call channels interval processing with conversation entity
+	result, err := channels.New(bot.LLM(), a.prompts, a.mmClient, a.dbClient, a.convService).Interval(
+		c.Request.Context(), context, channel.Id, userID, bot.GetMMBot().UserId, data.StartTime, data.EndTime, promptPreset,
+	)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
 
-	// Create post for the response
+	// Create post for the response with conversation ID for streaming turn persistence
 	post := &model.Post{}
 	post.AddProp(streaming.NoRegen, "true")
+	post.AddProp(streaming.ConversationIDProp, result.ConversationID)
 
 	// Stream result to new DM
-	if err := a.streamingService.StreamToNewDM(stdcontext.Background(), bot.GetMMBot().UserId, resultStream, user.Id, post, ""); err != nil {
+	if err := a.streamingService.StreamToNewDM(telemetry.DetachContext(c.Request.Context()), bot.GetMMBot().UserId, result.Stream, user.Id, post, ""); err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
 
-	// Save title asynchronously
-	a.conversationsService.SaveTitleAsync(post.Id, promptTitle)
+	// Persist the response post ID as the conversation's root so the RHS
+	// history list can navigate to it; without RootPostID the entry is
+	// filtered out of the threads list.
+	if a.convService != nil {
+		if updateErr := a.convService.UpdateConversationRootPostID(result.ConversationID, post.Id); updateErr != nil {
+			a.pluginAPI.Log.Error("Failed to update interval summary root post ID", "error", updateErr)
+		}
+		_ = a.convService.UpdateConversationTitle(result.ConversationID, promptTitle)
+	}
 
 	// Return result
-	result := map[string]string{
+	responseData := map[string]string{
 		"postid":    post.Id,
 		"channelid": post.ChannelId,
 	}
 
-	c.Render(http.StatusOK, render.JSON{Data: result})
+	c.Render(http.StatusOK, render.JSON{Data: responseData})
 }

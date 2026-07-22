@@ -4,9 +4,11 @@
 package llm
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBotConfig_IsValid(t *testing.T) {
@@ -198,6 +200,54 @@ func TestBotConfig_IsValid(t *testing.T) {
 	}
 }
 
+func TestBotConfig_MaxToolTurnsValidation(t *testing.T) {
+	tests := []struct {
+		name         string
+		maxToolTurns int
+		wantValid    bool
+	}{
+		{name: "zero is allowed and means use default", maxToolTurns: 0, wantValid: true},
+		{name: "small positive is allowed", maxToolTurns: 5, wantValid: true},
+		{name: "30 (current default) is allowed", maxToolTurns: 30, wantValid: true},
+		{name: "ceiling is allowed", maxToolTurns: MaxAllowedMaxToolTurns, wantValid: true},
+		{name: "negative is rejected", maxToolTurns: -1, wantValid: false},
+		{name: "above ceiling is rejected", maxToolTurns: MaxAllowedMaxToolTurns + 1, wantValid: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &BotConfig{
+				Name:               "n",
+				DisplayName:        "d",
+				ServiceID:          "svc",
+				ChannelAccessLevel: ChannelAccessLevelAll,
+				UserAccessLevel:    UserAccessLevelAll,
+				MaxToolTurns:       tt.maxToolTurns,
+			}
+			assert.Equal(t, tt.wantValid, c.IsValid())
+		})
+	}
+}
+
+func TestBotConfig_EffectiveMaxToolTurns(t *testing.T) {
+	tests := []struct {
+		name string
+		set  int
+		want int
+	}{
+		{name: "unset falls back to default", set: 0, want: DefaultMaxToolTurns},
+		{name: "negative falls back to default", set: -10, want: DefaultMaxToolTurns},
+		{name: "explicit positive is honored", set: 7, want: 7},
+		{name: "default value passes through", set: DefaultMaxToolTurns, want: DefaultMaxToolTurns},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := BotConfig{MaxToolTurns: tt.set}
+			assert.Equal(t, tt.want, c.EffectiveMaxToolTurns())
+		})
+	}
+}
+
 func TestIsValidService(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -313,24 +363,6 @@ func TestIsValidService(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "Valid ASage service with API key",
-			service: ServiceConfig{
-				ID:     "service-5",
-				Type:   ServiceTypeASage,
-				APIKey: "asage-key",
-			},
-			want: true,
-		},
-		{
-			name: "ASage service missing API key",
-			service: ServiceConfig{
-				ID:     "service-5",
-				Type:   ServiceTypeASage,
-				APIKey: "", // bad
-			},
-			want: false,
-		},
-		{
 			name: "Valid Cohere service with API key",
 			service: ServiceConfig{
 				ID:     "service-6",
@@ -395,6 +427,118 @@ func TestIsValidService(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "Valid Scale service with API key and API URL",
+			service: ServiceConfig{
+				ID:     "service-9",
+				Type:   ServiceTypeScale,
+				APIKey: "scale-key",
+				APIURL: "https://sgp-api.scalegov.com/v5",
+			},
+			want: true,
+		},
+		{
+			name: "Valid Scale service with API key, API URL, and OrgID",
+			service: ServiceConfig{
+				ID:     "service-9",
+				Type:   ServiceTypeScale,
+				APIKey: "scale-key",
+				APIURL: "https://sgp-api.scalegov.com/v5",
+				OrgID:  "account-123",
+			},
+			want: true,
+		},
+		{
+			name: "Scale service missing API key",
+			service: ServiceConfig{
+				ID:     "service-9",
+				Type:   ServiceTypeScale,
+				APIKey: "", // bad
+				APIURL: "https://sgp-api.scalegov.com/v5",
+			},
+			want: false,
+		},
+		{
+			name: "Scale service missing API URL",
+			service: ServiceConfig{
+				ID:     "service-9",
+				Type:   ServiceTypeScale,
+				APIKey: "scale-key",
+				APIURL: "", // bad
+			},
+			want: false,
+		},
+		{
+			name: "Valid Gemini service with API key",
+			service: ServiceConfig{
+				ID:     "service-10",
+				Type:   ServiceTypeGemini,
+				APIKey: "gemini-key",
+			},
+			want: true,
+		},
+		{
+			name: "Gemini service missing API key",
+			service: ServiceConfig{
+				ID:     "service-10",
+				Type:   ServiceTypeGemini,
+				APIKey: "", // bad
+			},
+			want: false,
+		},
+		{
+			name: "Valid Vertex service with ADC (no credentials)",
+			service: ServiceConfig{
+				ID:              "service-11",
+				Type:            ServiceTypeVertex,
+				VertexProjectID: "my-project",
+				Region:          "us-central1",
+				// VertexAuthCredentials empty — ADC / IAM role path
+			},
+			want: true,
+		},
+		{
+			name: "Valid Vertex service with service account JSON",
+			service: ServiceConfig{
+				ID:                    "service-11",
+				Type:                  ServiceTypeVertex,
+				VertexProjectID:       "my-project",
+				Region:                "europe-west4",
+				VertexAuthCredentials: `{"type":"service_account"}`,
+			},
+			want: true,
+		},
+		{
+			name: "Vertex service missing project ID",
+			service: ServiceConfig{
+				ID:              "service-11",
+				Type:            ServiceTypeVertex,
+				VertexProjectID: "", // bad
+				Region:          "us-central1",
+			},
+			want: false,
+		},
+		{
+			name: "Vertex service missing region",
+			service: ServiceConfig{
+				ID:              "service-11",
+				Type:            ServiceTypeVertex,
+				VertexProjectID: "my-project",
+				Region:          "", // bad
+			},
+			want: false,
+		},
+		{
+			name: "Vertex service with invalid service account JSON",
+			service: ServiceConfig{
+				ID:                    "service-11",
+				Type:                  ServiceTypeVertex,
+				VertexProjectID:       "my-project",
+				Region:                "us-central1",
+				VertexAuthCredentials: `{not-json`, // bad
+			},
+			want: false,
+		},
+		{
 			name: "Service with empty ID",
 			service: ServiceConfig{
 				ID:     "", // bad
@@ -430,11 +574,297 @@ func TestIsValidService(t *testing.T) {
 			},
 			want: false,
 		},
+		{
+			name: "Valid loadtest mock service minimal",
+			service: ServiceConfig{
+				ID:   "loadtest",
+				Type: ServiceTypeLoadTestMock,
+			},
+			want: true,
+		},
+		{
+			name: "Valid loadtest mock service with profile JSON",
+			service: ServiceConfig{
+				ID:                 "loadtest",
+				Type:               ServiceTypeLoadTestMock,
+				LoadTestMockConfig: json.RawMessage(`{"profile_weights":{"realistic_default":1,"realistic_fast":0,"realistic_slow":0}}`),
+			},
+			want: true,
+		},
+		{
+			name: "Invalid loadtest mock service missing ID",
+			service: ServiceConfig{
+				Type: ServiceTypeLoadTestMock,
+			},
+			want: false,
+		},
+		{
+			name: "Invalid loadtest mock service malformed JSON config",
+			service: ServiceConfig{
+				ID:                 "loadtest",
+				Type:               ServiceTypeLoadTestMock,
+				LoadTestMockConfig: json.RawMessage(`{`),
+			},
+			want: false,
+		},
+		{
+			name: "Invalid loadtest mock service unknown profile field",
+			service: ServiceConfig{
+				ID:                 "loadtest",
+				Type:               ServiceTypeLoadTestMock,
+				LoadTestMockConfig: json.RawMessage(`{"unknown_top_level":true}`),
+			},
+			want: false,
+		},
+		{
+			name: "Invalid loadtest mock service unknown latency profile weight",
+			service: ServiceConfig{
+				ID:                 "loadtest",
+				Type:               ServiceTypeLoadTestMock,
+				LoadTestMockConfig: json.RawMessage(`{"profile_weights":{"does_not_exist":1}}`),
+			},
+			want: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := IsValidService(tt.service)
 			assert.Equalf(t, tt.want, result, "IsValidService() for test case %q", tt.name)
+		})
+	}
+}
+
+func TestBotConfigMCPDynamicToolLoadingDefaulting(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{
+			name:    "omitted defaults true",
+			payload: `{"id":"bot1","name":"bot1","displayName":"Bot One","serviceID":"svc-1"}`,
+			want:    true,
+		},
+		{
+			name:    "explicit false survives",
+			payload: `{"id":"bot1","name":"bot1","displayName":"Bot One","serviceID":"svc-1","mcpDynamicToolLoading":false}`,
+			want:    false,
+		},
+		{
+			name:    "explicit true survives",
+			payload: `{"id":"bot1","name":"bot1","displayName":"Bot One","serviceID":"svc-1","mcpDynamicToolLoading":true}`,
+			want:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg BotConfig
+			require.NoError(t, json.Unmarshal([]byte(tt.payload), &cfg))
+			assert.Equal(t, tt.want, cfg.MCPDynamicToolLoading)
+		})
+	}
+
+	raw, err := json.Marshal(BotConfig{MCPDynamicToolLoading: false})
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"mcpDynamicToolLoading":false`)
+}
+
+func TestServiceConfig_JSONRoundTrip_FallbackServiceID(t *testing.T) {
+	cfg := ServiceConfig{
+		ID:                "s1",
+		Type:              ServiceTypeOpenAI,
+		APIKey:            "key",
+		FallbackServiceID: "s2",
+	}
+	data, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"fallbackServiceID":"s2"`)
+
+	var decoded ServiceConfig
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, "s2", decoded.FallbackServiceID)
+}
+
+func TestServiceConfig_JSONRoundTrip_FallbackServiceID_Omitted(t *testing.T) {
+	cfg := ServiceConfig{
+		ID:     "s1",
+		Type:   ServiceTypeOpenAI,
+		APIKey: "key",
+	}
+	data, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "fallbackServiceID")
+}
+
+func TestResolveFallbackChain(t *testing.T) {
+	openAISvc := ServiceConfig{
+		ID:                "openai-1",
+		Type:              ServiceTypeOpenAI,
+		APIKey:            "key-openai",
+		DefaultModel:      "gpt-4o",
+		FallbackServiceID: "anthropic-1",
+	}
+	anthropicSvc := ServiceConfig{
+		ID:                "anthropic-1",
+		Type:              ServiceTypeAnthropic,
+		APIKey:            "key-anthropic",
+		DefaultModel:      "claude-sonnet-4-20250514",
+		FallbackServiceID: "local-1",
+	}
+	localSvc := ServiceConfig{
+		ID:           "local-1",
+		Type:         ServiceTypeOpenAICompatible,
+		APIURL:       "http://localhost:11434/v1",
+		DefaultModel: "llama3",
+	}
+	cycleSvcA := ServiceConfig{
+		ID:                "cycle-a",
+		Type:              ServiceTypeOpenAI,
+		APIKey:            "key-a",
+		DefaultModel:      "gpt-4o",
+		FallbackServiceID: "cycle-b",
+	}
+	cycleSvcB := ServiceConfig{
+		ID:                "cycle-b",
+		Type:              ServiceTypeAnthropic,
+		APIKey:            "key-b",
+		DefaultModel:      "claude-sonnet-4-20250514",
+		FallbackServiceID: "cycle-a",
+	}
+	selfCycleSvc := ServiceConfig{
+		ID:                "self-cycle",
+		Type:              ServiceTypeOpenAI,
+		APIKey:            "key",
+		DefaultModel:      "gpt-4o",
+		FallbackServiceID: "self-cycle",
+	}
+	invalidFallbackSvc := ServiceConfig{
+		ID:                "valid-primary",
+		Type:              ServiceTypeOpenAI,
+		APIKey:            "key",
+		DefaultModel:      "gpt-4o",
+		FallbackServiceID: "invalid-svc",
+	}
+	// Invalid service (missing required API key)
+	invalidSvc := ServiceConfig{
+		ID:   "invalid-svc",
+		Type: ServiceTypeOpenAI,
+		// APIKey intentionally missing
+	}
+	noFallbackSvc := ServiceConfig{
+		ID:           "no-fallback",
+		Type:         ServiceTypeOpenAI,
+		APIKey:       "key",
+		DefaultModel: "gpt-4o",
+	}
+	// A valid primary whose fallback ID does not resolve to any service, so the
+	// chain stops at the primary instead of exercising the "primary not found" path.
+	missingFallbackSvc := ServiceConfig{
+		ID:                "missing-fallback-primary",
+		Type:              ServiceTypeOpenAI,
+		APIKey:            "key",
+		DefaultModel:      "gpt-4o",
+		FallbackServiceID: "does-not-exist",
+	}
+
+	allServices := map[string]ServiceConfig{
+		openAISvc.ID:          openAISvc,
+		anthropicSvc.ID:       anthropicSvc,
+		localSvc.ID:           localSvc,
+		cycleSvcA.ID:          cycleSvcA,
+		cycleSvcB.ID:          cycleSvcB,
+		selfCycleSvc.ID:       selfCycleSvc,
+		invalidFallbackSvc.ID: invalidFallbackSvc,
+		invalidSvc.ID:         invalidSvc,
+		noFallbackSvc.ID:      noFallbackSvc,
+		missingFallbackSvc.ID: missingFallbackSvc,
+	}
+
+	lookup := func(id string) (ServiceConfig, bool) {
+		svc, ok := allServices[id]
+		return svc, ok
+	}
+
+	tests := []struct {
+		name           string
+		primaryID      string
+		expectedIDs    []string
+		expectedModels []string
+		expectErr      string
+	}{
+		{
+			name:        "no fallback configured",
+			primaryID:   noFallbackSvc.ID,
+			expectedIDs: nil,
+		},
+		{
+			name:           "simple chain A→B",
+			primaryID:      anthropicSvc.ID,
+			expectedIDs:    []string{"local-1"},
+			expectedModels: []string{"llama3"},
+		},
+		{
+			name:           "multi-hop chain A→B→C",
+			primaryID:      openAISvc.ID,
+			expectedIDs:    []string{"anthropic-1", "local-1"},
+			expectedModels: []string{"claude-sonnet-4-20250514", "llama3"},
+		},
+		{
+			name:      "cycle A→B→A errors",
+			primaryID: cycleSvcA.ID,
+			expectErr: "cycle",
+		},
+		{
+			name:      "self-cycle A→A errors",
+			primaryID: selfCycleSvc.ID,
+			expectErr: "cycle",
+		},
+		{
+			name:      "fallback to invalid service errors",
+			primaryID: invalidFallbackSvc.ID,
+			expectErr: "invalid configuration",
+		},
+		{
+			name:        "primary not found returns nil without error",
+			primaryID:   "nonexistent",
+			expectedIDs: nil,
+		},
+		{
+			name:      "fallback points to missing service errors",
+			primaryID: "missing-fallback-primary",
+			expectErr: "does not exist",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chain, err := ResolveFallbackChain(tt.primaryID, lookup)
+
+			if tt.expectErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectErr)
+				return
+			}
+			require.NoError(t, err)
+
+			assert.Len(t, chain, len(tt.expectedIDs))
+
+			if tt.expectedIDs != nil {
+				gotIDs := make([]string, len(chain))
+				for i, svc := range chain {
+					gotIDs[i] = svc.ID
+				}
+				assert.Equal(t, tt.expectedIDs, gotIDs)
+			}
+
+			if tt.expectedModels != nil {
+				gotModels := make([]string, len(chain))
+				for i, svc := range chain {
+					gotModels[i] = svc.DefaultModel
+				}
+				assert.Equal(t, tt.expectedModels, gotModels)
+			}
 		})
 	}
 }

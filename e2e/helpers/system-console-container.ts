@@ -10,15 +10,36 @@ import MattermostContainer from './mmcontainer';
 export interface SystemConsolePluginConfig {
     allowPrivateChannels?: boolean;
     disableFunctionCalls?: boolean;
-    enableLLMTrace?: boolean;
     enableUserRestrictions?: boolean;
     enableVectorIndex?: boolean;
     enableTokenUsageLogging?: boolean;
+    enableChannelMentionToolCalling?: boolean;
     defaultBotName?: string;
     allowedUpstreamHostnames?: string;
     allowUnsafeLinks?: boolean;
+    embeddingSearchConfig?: Record<string, unknown>;
     services?: any[];
     bots?: any[];
+    mcp?: {
+        enabled?: boolean;
+        enablePluginServer?: boolean;
+        idleTimeoutMinutes?: number;
+        servers?: MCPServerConfig[] | null;
+        embeddedServer?: {
+            enabled?: boolean;
+            tool_configs?: Array<{ name?: string; policy?: string; enabled?: boolean }>;
+        };
+    };
+}
+
+export interface MCPServerConfig {
+    name?: string;
+    enabled?: boolean;
+    baseURL?: string;
+    headers?: Record<string, string>;
+    clientID?: string;
+    clientSecret?: string;
+    tool_configs?: Array<{ name?: string; policy?: string; enabled?: boolean }>;
 }
 
 const adminUsername = 'sysadmin';
@@ -73,32 +94,51 @@ async function setupAdminUser(mattermost: MattermostContainer): Promise<void> {
  */
 export async function RunSystemConsoleContainer(config: SystemConsolePluginConfig): Promise<MattermostContainer> {
     const filename = findPluginFile();
+    const mcpServers = config.mcp?.servers === undefined ? [] : config.mcp.servers;
 
-    const pluginConfig = {
+    const pluginConfig: Record<string, any> = {
         config: {
             allowPrivateChannels: config.allowPrivateChannels ?? true,
             disableFunctionCalls: config.disableFunctionCalls ?? false,
-            enableLLMTrace: config.enableLLMTrace ?? true,
             enableUserRestrictions: config.enableUserRestrictions ?? false,
             enableVectorIndex: config.enableVectorIndex ?? false,
             enableTokenUsageLogging: config.enableTokenUsageLogging,
+            enableChannelMentionToolCalling: config.enableChannelMentionToolCalling ?? false,
             defaultBotName: config.defaultBotName,
             allowedUpstreamHostnames: config.allowedUpstreamHostnames,
             allowUnsafeLinks: config.allowUnsafeLinks,
             services: config.services ?? [],
             bots: config.bots ?? [],
+            mcp: {
+                enabled: config.mcp?.enabled ?? false,
+                enablePluginServer: config.mcp?.enablePluginServer ?? false,
+                idleTimeoutMinutes: config.mcp?.idleTimeoutMinutes ?? 30,
+                servers: mcpServers,
+                embeddedServer: {
+                    enabled: config.mcp?.embeddedServer?.enabled ?? true,
+                },
+            },
         }
     };
 
+    if (config.mcp) {
+        pluginConfig.config.mcp = config.mcp;
+    }
+
+    if (config.embeddingSearchConfig) {
+        pluginConfig.config.embeddingSearchConfig = config.embeddingSearchConfig;
+    }
+
     const mattermost = await new MattermostContainer()
+        .withEnv('MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS', 'openai')
         .withPlugin(filename, 'mattermost-ai', pluginConfig)
         .start();
 
     await setupAdminUser(mattermost);
+    await mattermost.grantSelfServiceAgentPermissions();
 
     return mattermost;
 }
 
 export { adminUsername, adminPassword };
 export default RunSystemConsoleContainer;
-

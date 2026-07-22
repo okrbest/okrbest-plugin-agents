@@ -5,22 +5,22 @@ package conversations_test
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"path/filepath"
 	"testing"
 
-	"github.com/mattermost/mattermost-plugin-ai/bots"
-	"github.com/mattermost/mattermost-plugin-ai/conversations"
-	"github.com/mattermost/mattermost-plugin-ai/enterprise"
-	"github.com/mattermost/mattermost-plugin-ai/evals"
-	"github.com/mattermost/mattermost-plugin-ai/i18n"
-	"github.com/mattermost/mattermost-plugin-ai/llm"
-	"github.com/mattermost/mattermost-plugin-ai/llmcontext"
-	"github.com/mattermost/mattermost-plugin-ai/mcp"
-	"github.com/mattermost/mattermost-plugin-ai/mmapi/mocks"
-	"github.com/mattermost/mattermost-plugin-ai/mmtools"
-	"github.com/mattermost/mattermost-plugin-ai/prompts"
+	"github.com/mattermost/mattermost-plugin-agents/v2/bots"
+	"github.com/mattermost/mattermost-plugin-agents/v2/conversations"
+	"github.com/mattermost/mattermost-plugin-agents/v2/enterprise"
+	"github.com/mattermost/mattermost-plugin-agents/v2/evals"
+	"github.com/mattermost/mattermost-plugin-agents/v2/i18n"
+	"github.com/mattermost/mattermost-plugin-agents/v2/llm"
+	"github.com/mattermost/mattermost-plugin-agents/v2/llmcontext"
+	"github.com/mattermost/mattermost-plugin-agents/v2/mcp"
+	"github.com/mattermost/mattermost-plugin-agents/v2/mmapi/mocks"
+	"github.com/mattermost/mattermost-plugin-agents/v2/prompts"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
@@ -31,32 +31,26 @@ import (
 // Mock implementations
 type mockToolProvider struct{}
 
-func (m *mockToolProvider) GetTools(bot *bots.Bot) []llm.Tool {
-	tools := []llm.Tool{}
-
-	tools = append(tools, llm.Tool{
-		Name:        "GetGithubIssue",
-		Description: "Retrieve a single GitHub issue by owner, repo, and issue number.",
-		Schema:      llm.NewJSONSchemaFromStruct[mmtools.GetGithubIssueArgs](),
-		Resolver: func(context *llm.Context, args llm.ToolArgumentGetter) (string, error) {
-			return "Unable to retrieve GitHub issue", nil
+func (m *mockToolProvider) GetTools(bot *bots.Bot, _ *llm.Context) []llm.Tool {
+	return []llm.Tool{
+		{
+			Name:        "WebSearch",
+			Description: "Search the web for information.",
+			Schema:      llm.NewJSONSchemaFromStruct[struct{ Term string }](),
+			Resolver: func(_ context.Context, _ *llm.Context, args llm.ToolArgumentGetter) (string, error) {
+				return "No results found.", nil
+			},
 		},
-	})
-
-	return tools
+	}
 }
 
 type mockMCPClientManager struct{}
 
-func (m *mockMCPClientManager) GetToolsForUser(userID string) ([]llm.Tool, *mcp.Errors) {
+func (m *mockMCPClientManager) GetToolsForUser(context.Context, string) ([]llm.Tool, *mcp.Errors) {
 	return []llm.Tool{}, nil
 }
 
 type mockConfigProvider struct{}
-
-func (m *mockConfigProvider) GetEnableLLMTrace() bool {
-	return false
-}
 
 func (m *mockConfigProvider) GetServiceByID(id string) (llm.ServiceConfig, bool) {
 	return llm.ServiceConfig{}, false
@@ -91,7 +85,7 @@ func TestConversationMentionHandling(t *testing.T) {
 			client := pluginapi.NewClient(mockAPI, nil)
 			mmClient := mocks.NewMockClient(t)
 			licenseChecker := enterprise.NewLicenseChecker(client)
-			botService := bots.New(mockAPI, client, licenseChecker, nil, &http.Client{}, nil, nil)
+			botService := bots.New(mockAPI, client, licenseChecker, nil, nil, &http.Client{}, nil)
 			prompts, err := llm.NewPrompts(prompts.PromptsFolder)
 			require.NoError(t, err, "Failed to load prompts")
 
@@ -121,7 +115,7 @@ func TestConversationMentionHandling(t *testing.T) {
 				configProvider,
 			)
 
-			conv := conversations.New(
+			_ = conversations.New(
 				prompts,
 				mmClient,
 				nil,
@@ -131,6 +125,7 @@ func TestConversationMentionHandling(t *testing.T) {
 				licenseChecker,
 				i18n.Init(),
 				nil,
+				nil, // configProvider - nil means channel tool calling is disabled (default)
 			)
 
 			// Create a mock bot
@@ -153,10 +148,27 @@ func TestConversationMentionHandling(t *testing.T) {
 			}
 			llmInstance := llm.NewLanguageModelTestLogWrapper(t.T, t.LLM)
 
-			bot := bots.NewBot(botConfig, serviceConfig, mmBot, llmInstance)
+			_ = bots.NewBot(botConfig, serviceConfig, mmBot, llmInstance)
 
-			textStream, err := conv.ProcessUserRequest(bot, threadData.RequestingUser(), threadData.Channel, threadData.LatestPost())
-			require.NoError(t, err, "Failed to process user request")
+			// Build completion request directly (ProcessUserRequest was removed in Step L)
+			llmContext := contextBuilder.BuildLLMContextUserRequest(
+				bots.NewBot(botConfig, serviceConfig, mmBot, llmInstance),
+				threadData.RequestingUser(),
+				threadData.Channel,
+			)
+			systemPrompt, err := prompts.Format("direct_message_question_system", llmContext)
+			require.NoError(t, err, "Failed to format system prompt")
+
+			posts := []llm.Post{
+				{Role: llm.PostRoleSystem, Message: systemPrompt},
+				{Role: llm.PostRoleUser, Message: threadData.LatestPost().Message},
+			}
+			textStream, err := llmInstance.ChatCompletion(context.Background(), llm.CompletionRequest{
+				Posts:     posts,
+				Context:   llmContext,
+				Operation: llm.OperationConversation,
+			})
+			require.NoError(t, err, "Failed to get chat completion")
 			require.NotNil(t, textStream, "Expected a non-nil text stream")
 
 			// Read the response from the text stream

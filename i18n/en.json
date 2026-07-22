@@ -1,5 +1,9 @@
 [
   {
+    "id": "agents.agent_mention_reminder_fallback",
+    "translation": "To respond to an agent you must @mention them."
+  },
+  {
     "id": "agents.analyze_thread",
     "translation": "Sure, I will analyze this thread: %s/_redirect/pl/%s\n"
   },
@@ -38,10 +42,6 @@
   {
     "id": "agents.summarize_recording",
     "translation": "Sure, I will summarize this recording: %s/_redirect/pl/%s\n"
-  },
-  {
-    "id": "agents.summarize_thread",
-    "translation": "Sure, I will summarize this thread: %s/_redirect/pl/%s\n"
   },
   {
     "id": "agents.summarize_transcription",

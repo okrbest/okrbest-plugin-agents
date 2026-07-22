@@ -22,12 +22,15 @@ const defaultNewService: LLMService = {
     defaultModel: '',
     tokenLimit: 0,
     streamingTimeoutSeconds: 0,
-    sendUserId: false,
     outputTokenLimit: 0,
-    useResponsesAPI: false,
+    useResponsesAPI: true,
     region: '',
     awsAccessKeyID: '',
     awsSecretAccessKey: '',
+    vertexProjectID: '',
+    vertexProjectNumber: '',
+    vertexAuthCredentials: '',
+    fallbackServiceID: '',
 };
 
 export const firstNewService = {
@@ -81,7 +84,12 @@ const Services = (props: Props) => {
             return;
         }
 
-        props.onChange(props.services.filter((b) => b.id !== id));
+        // Drop the service and clear any remaining service's fallback link to it,
+        // so deletion never leaves a dangling fallbackServiceID behind.
+        const remaining = props.services.
+            filter((b) => b.id !== id).
+            map((b) => (b.fallbackServiceID === id ? {...b, fallbackServiceID: ''} : b));
+        props.onChange(remaining);
     };
 
     return (
@@ -91,6 +99,7 @@ const Services = (props: Props) => {
                     <Service
                         key={service.id}
                         service={service}
+                        services={props.services}
                         onChange={onChange}
                         onDelete={() => onDelete(service.id)}
                     />
@@ -100,15 +109,14 @@ const Services = (props: Props) => {
                 <PlusAIServiceIcon/>
                 <FormattedMessage defaultMessage='Add an AI Service'/>
             </TertiaryButton>
-            {showErrorDialog && (
-                <ConfirmationDialog
-                    title={<FormattedMessage defaultMessage='Cannot Delete Service'/>}
-                    message={errorMessage}
-                    confirmButtonText={<FormattedMessage defaultMessage='OK'/>}
-                    onConfirm={() => setShowErrorDialog(false)}
-                    onCancel={() => setShowErrorDialog(false)}
-                />
-            )}
+            <ConfirmationDialog
+                show={showErrorDialog}
+                title={<FormattedMessage defaultMessage='Cannot Delete Service'/>}
+                message={errorMessage}
+                confirmButtonText={<FormattedMessage defaultMessage='OK'/>}
+                onConfirm={() => setShowErrorDialog(false)}
+                onCancel={() => setShowErrorDialog(false)}
+            />
         </>
     );
 };
