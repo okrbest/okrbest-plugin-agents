@@ -247,7 +247,6 @@ You **MUST** consider the user input before proceeding (if not empty).
    ```
 
    squash·merge commit은 저장소 설정으로 막혀 있다 (`Upstream:` 참조 보존). 커밋 제목·PR 본문
-   형식은 AGENTS.md "Pull requests and commits" 절을 따른다 — 에이전트 `Co-Authored-By` 금지. 커밋 제목·PR 본문
    형식은 AGENTS.md "Pull requests and commits" 절을 따른다 — 에이전트 `Co-Authored-By` 금지.
    rebase 병합 뒤 로컬 브랜치는 SHA가 바뀌어 `git branch -d`가 거부한다 — `-D`를 쓴다.
 

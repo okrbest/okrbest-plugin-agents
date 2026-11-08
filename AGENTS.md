@@ -137,6 +137,7 @@ Read these only when the trigger applies:
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
+at specs/001-korean-locale/plan.md
 <!-- SPECKIT END -->
 
 ## Workflow (okrbest fork)
