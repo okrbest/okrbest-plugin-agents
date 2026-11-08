@@ -39,9 +39,13 @@ node_modules/
 
 test-results/
 
-specs/
+# specs/ 는 upstream이 무시하지만 이 포크에서는 spec-kit 명세 정본이라 추적한다 (constitution 원칙 VII)
 
-.cursor/
+# Cursor: 내용물은 막고 spec-kit 스킬·규칙만 되돌린다 — 디렉터리 자체를 막으면 ! 예외가 안 먹는다
+.cursor/*
+!.cursor/skills/
+!.cursor/rules/
+.cursor/plans/
 
 /.plan
 
@@ -54,3 +58,8 @@ opencode.json
 # Locally built binaries
 cmd/evalviewer/evalviewer
 .pat
+
+# superpowers (local scratch; spec-kit specs/ is canonical)
+.worktrees/
+docs/superpowers/
+.superpowers/
